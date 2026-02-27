@@ -2211,41 +2211,46 @@ def _monitor_orders():
                         except Exception as inner_e:
                             print(f"  Monitor check error {info['ticker']}: {inner_e}")
 
-            # ── Sweep for any closed positions not in open_orders ─────────────
-            # Catches manual trades placed before server restart or outside the scanner
+            # ── Sweep for any closed trades not yet logged ────────────────────
             try:
                 if TRADING_OK and EMAIL_OK:
                     with _auto_lock:
-                        already_tracked = {info["ticker"] for info in _auto_state["open_orders"].values()}
-                        already_logged  = {t["ticker"] for t in _auto_state["daily_trades"]}
+                        tracked_ids = set(_auto_state["open_orders"].keys())
+                        logged_ids  = set(_auto_state.get("logged_order_ids", set()))
 
-                    today_str = datetime.now().strftime("%Y-%m-%d")
                     closed = _tc().get_orders(filter=GetOrdersRequest(
                         status=QueryOrderStatus.CLOSED,
-                        limit=20,
-                        after=datetime.strptime(today_str, "%Y-%m-%d").replace(
-                            tzinfo=timezone(timedelta(hours=-5))),
+                        limit=50,
                     ))
+
                     for o in closed:
+                        oid   = str(o.id)
                         ostat = o.status.value if hasattr(o.status, "value") else str(o.status)
                         oside = o.side.value   if hasattr(o.side,   "value") else str(o.side)
                         sym   = o.symbol
+
                         if ostat != "filled" or oside != "sell":
                             continue
-                        if sym in already_tracked or sym in already_logged:
+                        if oid in tracked_ids or oid in logged_ids:
                             continue
-                        # Found an untracked closed sell — compute P&L from avg prices
+
+                        # Only process today's orders
+                        filled_at = o.filled_at or o.updated_at
+                        if filled_at:
+                            fa = filled_at if hasattr(filled_at, 'date') else None
+                            if fa and fa.date() < datetime.now().date():
+                                continue
+
                         fill_price = float(o.filled_avg_price or 0)
                         qty        = float(o.filled_qty or o.qty or 0)
                         if not fill_price or not qty:
                             continue
-                        # Try to find matching buy order for entry price
+
+                        # Find matching buy order for entry price
                         entry_price = 0.0
                         try:
                             buys = _tc().get_orders(filter=GetOrdersRequest(
-                                symbols=[sym], status=QueryOrderStatus.CLOSED, limit=10,
-                                after=datetime.strptime(today_str, "%Y-%m-%d").replace(
-                                    tzinfo=timezone(timedelta(hours=-5))),
+                                symbols=[sym], status=QueryOrderStatus.CLOSED, limit=20,
                             ))
                             for b in buys:
                                 bstat = b.status.value if hasattr(b.status, "value") else str(b.status)
@@ -2255,32 +2260,36 @@ def _monitor_orders():
                                     break
                         except Exception:
                             pass
+
                         if not entry_price:
                             continue
 
                         trade_pnl = round((fill_price - entry_price) * qty, 2)
-                        reason    = "manual"
                         time_str  = datetime.now().strftime("%H:%M")
-                        print(f"  📧 Sweep found untracked trade: {sym} P&L ${trade_pnl:+.2f} — sending email")
+                        print(f"  📧 Sweep: untracked trade {sym} exit ${fill_price:.2f}  P&L ${trade_pnl:+.2f} — emailing")
 
                         with _auto_lock:
                             _auto_state["daily_pnl"] = round(_auto_state["daily_pnl"] + trade_pnl, 2)
                             _auto_state["daily_trades"].append({
-                                "ticker": sym, "pnl": trade_pnl, "reason": reason,
+                                "ticker": sym, "pnl": trade_pnl, "reason": "manual",
                                 "time": time_str, "entry": entry_price,
                                 "exit": fill_price, "shares": int(qty),
                             })
+                            if "logged_order_ids" not in _auto_state:
+                                _auto_state["logged_order_ids"] = set()
+                            _auto_state["logged_order_ids"].add(oid)
                             new_daily_pnl = _auto_state["daily_pnl"]
 
                         threading.Thread(
                             target=_send_fill_email,
                             args=(sym, "sell", int(qty), fill_price, entry_price,
-                                  0, 0, str(o.id), reason,
+                                  0, 0, oid, "manual",
                                   trade_pnl, new_daily_pnl, False, "", "manual"),
                             daemon=True
                         ).start()
+
             except Exception as sweep_e:
-                pass  # sweep is best-effort
+                print(f"  Sweep error: {sweep_e}")
 
         except Exception as e:
             print(f"  Monitor loop error: {e}")
@@ -2327,7 +2336,89 @@ def api_reset_kill_switch():
     return jsonify({"ok": True, "message": "Kill switch reset — auto-trading re-enabled"})
 
 
-@app.route("/api/pnl")
+@app.route("/api/auto-trade/sweep-now", methods=["POST"])
+def api_sweep_now():
+    """Manually trigger the untracked trade sweep — for debugging."""
+    results = []
+    try:
+        with _auto_lock:
+            logged_ids = set(_auto_state.get("logged_order_ids", set()))
+            logged_tickers = {t["ticker"] for t in _auto_state["daily_trades"]}
+
+        closed = _tc().get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED, limit=50,
+        ))
+
+        for o in closed:
+            oid   = str(o.id)
+            ostat = o.status.value if hasattr(o.status, "value") else str(o.status)
+            oside = o.side.value   if hasattr(o.side,   "value") else str(o.side)
+            sym   = o.symbol
+
+            if ostat != "filled" or oside != "sell":
+                continue
+            if oid in logged_ids:
+                results.append({"ticker": sym, "status": "already_logged"})
+                continue
+
+            filled_at = o.filled_at or o.updated_at
+            if filled_at and hasattr(filled_at, 'date'):
+                if filled_at.date() < __import__('datetime').date.today():
+                    results.append({"ticker": sym, "status": "old_order_skipped"})
+                    continue
+
+            fill_price = float(o.filled_avg_price or 0)
+            qty        = float(o.filled_qty or o.qty or 0)
+            if not fill_price or not qty:
+                results.append({"ticker": sym, "status": "no_fill_price"})
+                continue
+
+            entry_price = 0.0
+            buys = _tc().get_orders(filter=GetOrdersRequest(
+                symbols=[sym], status=QueryOrderStatus.CLOSED, limit=20,
+            ))
+            for b in buys:
+                bstat = b.status.value if hasattr(b.status, "value") else str(b.status)
+                bside = b.side.value   if hasattr(b.side,   "value") else str(b.side)
+                if bstat == "filled" and bside == "buy":
+                    entry_price = float(b.filled_avg_price or 0)
+                    break
+
+            if not entry_price:
+                results.append({"ticker": sym, "status": "no_buy_found", "fill": fill_price})
+                continue
+
+            trade_pnl = round((fill_price - entry_price) * qty, 2)
+            time_str  = __import__('datetime').datetime.now().strftime("%H:%M")
+
+            with _auto_lock:
+                _auto_state["daily_pnl"] = round(_auto_state["daily_pnl"] + trade_pnl, 2)
+                _auto_state["daily_trades"].append({
+                    "ticker": sym, "pnl": trade_pnl, "reason": "manual",
+                    "time": time_str, "entry": entry_price,
+                    "exit": fill_price, "shares": int(qty),
+                })
+                if "logged_order_ids" not in _auto_state:
+                    _auto_state["logged_order_ids"] = set()
+                _auto_state["logged_order_ids"].add(oid)
+                new_daily_pnl = _auto_state["daily_pnl"]
+
+            threading.Thread(
+                target=_send_fill_email,
+                args=(sym, "sell", int(qty), fill_price, entry_price,
+                      0, 0, oid, "manual",
+                      trade_pnl, new_daily_pnl, False, "", "manual"),
+                daemon=True
+            ).start()
+
+            results.append({"ticker": sym, "status": "emailed",
+                             "entry": entry_price, "exit": fill_price,
+                             "pnl": trade_pnl, "qty": int(qty)})
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "results": results})
+
+    return jsonify({"ok": True, "results": results})
 def api_pnl():
     """
     Daily + weekly + monthly P&L from Alpaca portfolio history.
