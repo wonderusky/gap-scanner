@@ -2106,7 +2106,14 @@ def _monitor_orders():
                                     _auto_state["open_orders"][order_id]["status"] = "filled"
                                     print(f"  ✅ Order filled: {info['ticker']} [{order_id[:8]}]")
 
-                        elif status in ("canceled", "expired", "replaced"):
+                        elif status in ("replaced",):
+                            # Bracket orders get replaced by child legs — mark filled, keep watching
+                            with _auto_lock:
+                                if _auto_state["open_orders"].get(order_id, {}).get("status") == "open":
+                                    _auto_state["open_orders"][order_id]["status"] = "filled"
+                                    print(f"  ✅ Bracket replaced→filled: {info['ticker']} [{order_id[:8]}]")
+
+                        elif status in ("canceled", "expired"):
                             with _auto_lock:
                                 _auto_state["open_orders"].pop(order_id, None)
                             print(f"  ↩  Order {status}: {info['ticker']} [{order_id[:8]}]")
@@ -2262,7 +2269,7 @@ def api_pnl():
         # Get portfolio history — 1 month daily bars
         from alpaca.trading.requests import GetPortfolioHistoryRequest
         hist_req = GetPortfolioHistoryRequest(period="1M", timeframe="1D", extended_hours=False)
-        hist = tc.get_portfolio_history(filter=hist_req)
+        hist = tc.get_portfolio_history(hist_req)
 
         history_points = []
         if hist and hist.timestamp:
