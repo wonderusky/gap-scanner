@@ -1539,6 +1539,7 @@ async function submitOrder(side) {
       ticker,
       qty:         parseInt(document.getElementById('modalQty').value),
       side:        'buy',
+      entry_price: price,
       stop_loss:   stopLoss,
       take_profit: takeProfit,
       limit_price: limitVal ? parseFloat(limitVal) : null,

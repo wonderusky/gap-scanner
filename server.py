@@ -1430,9 +1430,38 @@ def api_order():
             )
 
         order = tc.submit_order(order_req)
+        order_id_str = str(order.id)
+
+        # ── Register manual BUY in order monitor so P&L is tracked ──────────
+        if side == "buy" and stop_loss and take_profit:
+            entry_price = float(body.get("entry_price", 0) or 0)
+            if entry_price <= 0:
+                if limit_price:
+                    entry_price = float(limit_price)
+                else:
+                    try:
+                        from alpaca.data.historical import StockHistoricalDataClient
+                        from alpaca.data.requests import StockLatestTradeRequest
+                        dc = StockHistoricalDataClient(API_KEY, API_SECRET)
+                        snap = dc.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=ticker))
+                        entry_price = float(snap[ticker].price)
+                    except Exception:
+                        entry_price = 0.0
+            with _auto_lock:
+                _auto_state["open_orders"][order_id_str] = {
+                    "ticker":      ticker,
+                    "shares":      qty,
+                    "entry_price": entry_price,
+                    "stop":        stop_loss,
+                    "target1":     take_profit,
+                    "status":      "open",
+                    "source":      "manual",
+                }
+            print(f"  📋 Manual order registered for P&L tracking: {ticker} {qty}sh @ ${entry_price:.2f}")
+
         return jsonify({
             "ok":       True,
-            "order_id": str(order.id),
+            "order_id": order_id_str,
             "ticker":   order.symbol,
             "qty":      float(order.qty or 0),
             "side":     side,
