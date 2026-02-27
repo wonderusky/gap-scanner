@@ -1870,7 +1870,7 @@ def _send_buy_email(ticker, shares, entry_price, stop, target1, gap_pct, catalys
 
 def _send_fill_email(ticker, side, shares, fill_price, entry_price, stop, target1,
                      order_id, fill_reason, trade_pnl=None, daily_pnl=None,
-                     kill_fired=False, kill_msg=""):
+                     kill_fired=False, kill_msg="", source="auto"):
     """Email when a position is closed — stop hit or target hit."""
     et = datetime.now(timezone(timedelta(hours=-5)))
     try:
@@ -1886,6 +1886,8 @@ def _send_fill_email(ticker, side, shares, fill_price, entry_price, stop, target
     color    = "#3fb950" if won else "#f85149"
     icon     = "✅" if fill_reason == "target" else ("🛑" if fill_reason == "stop" else "📤")
     label    = "TARGET HIT" if fill_reason == "target" else ("STOPPED OUT" if fill_reason == "stop" else "POSITION CLOSED")
+    src_tag  = "MANUAL TRADE" if source == "manual" else "AUTO TRADE"
+    src_color= "#58a6ff" if source == "manual" else "#8b949e"
 
     kill_banner = ""
     if kill_fired:
@@ -1914,7 +1916,10 @@ def _send_fill_email(ticker, side, shares, fill_price, entry_price, stop, target
     <div style="background:#0d1117;color:#e6edf3;font-family:monospace;padding:24px;border-radius:8px;max-width:520px">
       <div style="font-size:22px;font-weight:bold;letter-spacing:3px;color:{color};margin-bottom:4px">
         {icon} {label}</div>
-      <div style="font-size:13px;color:#8b949e;margin-bottom:20px">{time_str} ET — Paper Account</div>
+      <div style="font-size:13px;color:#8b949e;margin-bottom:4px">{time_str} ET — Paper Account</div>
+      <div style="display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:bold;
+                  background:{src_color}22;border:1px solid {src_color};color:{src_color};margin-bottom:16px">
+        {src_tag}</div>
       {kill_banner}
       <table style="width:100%;border-collapse:collapse;font-size:14px">
         <tr><td style="padding:6px 0;color:#8b949e">Ticker</td>
@@ -2198,7 +2203,8 @@ def _monitor_orders():
                                         target=_send_fill_email,
                                         args=(ticker, "sell", shares_n, fill_price,
                                               entry_p, stop_p, target_p, order_id, reason,
-                                              trade_pnl, new_daily_pnl, kill_fired, kill_msg),
+                                              trade_pnl, new_daily_pnl, kill_fired, kill_msg,
+                                              info.get("source", "auto")),
                                         daemon=True
                                     ).start()
 
