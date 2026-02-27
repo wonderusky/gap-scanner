@@ -19,6 +19,10 @@ import re
 import threading
 import concurrent.futures
 import xml.etree.ElementTree as ET
+import smtplib
+import time
+from email.mime.multipart import MIMEMultipart
+from email.mime.text      import MIMEText
 from datetime import datetime, date, timezone, timedelta
 from urllib.request import urlopen, Request
 from urllib.error import URLError
@@ -64,10 +68,47 @@ try:
     API_KEY    = config.ALPACA_API_KEY
     API_SECRET = config.ALPACA_SECRET_KEY
     IS_PAPER   = getattr(config, "PAPER", True)
+    # Email
+    EMAIL_ENABLED      = getattr(config, "EMAIL_ENABLED",      False)
+    EMAIL_FROM         = getattr(config, "EMAIL_FROM",         "")
+    EMAIL_APP_PASSWORD = getattr(config, "EMAIL_APP_PASSWORD", "")
+    EMAIL_TO           = getattr(config, "EMAIL_TO",           "")
+    # Scheduler
+    SCHEDULER_ENABLED  = getattr(config, "SCHEDULER_ENABLED",  False)
+    SCAN_INTERVAL_MIN  = getattr(config, "SCAN_INTERVAL_MIN",  5)
+    SCAN_WINDOW_START  = getattr(config, "SCAN_WINDOW_START",  "08:00")
+    SCAN_WINDOW_END    = getattr(config, "SCAN_WINDOW_END",    "10:30")
+    ALERT_ON_GO        = getattr(config, "ALERT_ON_GO",        True)
+    ALERT_ON_WATCH     = getattr(config, "ALERT_ON_WATCH",     True)
+    ALERT_ON_NEW       = getattr(config, "ALERT_ON_NEW",       True)
+    # Auto-execution
+    AUTO_TRADE_ENABLED      = getattr(config, "AUTO_TRADE_ENABLED",      False)
+    AUTO_VERDICTS           = getattr(config, "AUTO_VERDICTS",           ["GO"])
+    AUTO_MAX_TRADES_PER_DAY = getattr(config, "AUTO_MAX_TRADES_PER_DAY", 3)
+    AUTO_REQUIRE_ABOVE_VWAP = getattr(config, "AUTO_REQUIRE_ABOVE_VWAP", True)
+    AUTO_MIN_SCORE          = getattr(config, "AUTO_MIN_SCORE",          30)
+    AUTO_MONITOR_INTERVAL   = getattr(config, "AUTO_MONITOR_INTERVAL",   60)
+    AUTO_DAILY_LOSS_LIMIT   = getattr(config, "AUTO_DAILY_LOSS_LIMIT",   -500)
+    AUTO_DAILY_PROFIT_TARGET= getattr(config, "AUTO_DAILY_PROFIT_TARGET", 1000)
 except ImportError:
     API_KEY    = os.environ.get("ALPACA_API_KEY", "")
     API_SECRET = os.environ.get("ALPACA_SECRET_KEY", "")
     IS_PAPER   = True
+    EMAIL_ENABLED     = False
+    SCHEDULER_ENABLED = False
+    SCAN_INTERVAL_MIN = 5
+    SCAN_WINDOW_START = "08:00"
+    SCAN_WINDOW_END   = "10:30"
+    ALERT_ON_GO = ALERT_ON_WATCH = ALERT_ON_NEW = True
+    EMAIL_FROM = EMAIL_APP_PASSWORD = EMAIL_TO = ""
+    AUTO_TRADE_ENABLED      = False
+    AUTO_VERDICTS           = ["GO"]
+    AUTO_MAX_TRADES_PER_DAY = 3
+    AUTO_REQUIRE_ABOVE_VWAP = True
+    AUTO_MIN_SCORE          = 30
+    AUTO_MONITOR_INTERVAL   = 60
+    AUTO_DAILY_LOSS_LIMIT   = -500
+    AUTO_DAILY_PROFIT_TARGET= 1000
 
 def _tc():
     """Return a cached TradingClient (paper or live per config)."""
@@ -91,24 +132,133 @@ _yf_cache      = {}
 _yf_cache_date = None
 _yf_lock       = threading.Lock()
 
-# ── Universe — broad watchlist of historically active gappers ─────────────────
-WATCHLIST = [
-    # Mega-cap tech
+# ── Universe ──────────────────────────────────────────────────────────────────
+# Static fallback list — used only if dynamic screener fails
+WATCHLIST_FALLBACK = [
     "NVDA","AMD","TSLA","META","AMZN","GOOGL","MSFT","AAPL","NFLX","CRM","ORCL","ADBE",
-    # High-vol momentum
     "SMCI","HIMS","APP","PLTR","HOOD","SOFI","UPST","MSTR","IONQ","RKLB","ACHR","JOBY",
-    # Biotech / Healthcare
     "AXSM","WGS","TNDM","OCGN","RXST","BBIO","AGIO","NVAX","SAVA","ACAD","SRPT",
     "RARE","EDIT","NTLA","BEAM","CRSP","FOLD","CELC","IMVT","LEGN","KYMR",
-    # Small/mid momentum
     "LUNR","LAZR","ARRY","SOUN","MARA","RIOT","CLSK","HUT","CIFR","BTBT","WULF","IREN",
-    # Semis
     "CRDO","WOLF","CRUS","MRVL","AEHR","COHU","AMBA","LSCC","RMBS",
-    # Consumer / fintech
     "DASH","LYFT","UBER","ABNB","DKNG","PENN","AFRM","CHWY","ETSY","PINS","OPEN",
-    # EV / Energy
     "CHPT","BLNK","EVGO","RIVN","LCID","NIO","XPEV","LI",
 ]
+
+# Keep WATCHLIST pointing at fallback for any legacy references
+WATCHLIST = WATCHLIST_FALLBACK
+
+# Screener config — tune in config.py
+try:
+    import config as _cfg_ref
+    SCREENER_TOP_GAINERS = getattr(_cfg_ref, "SCREENER_TOP_GAINERS", 50)
+    SCREENER_TOP_ACTIVES = getattr(_cfg_ref, "SCREENER_TOP_ACTIVES", 50)
+    SCREENER_MIN_PRICE   = getattr(_cfg_ref, "SCREENER_MIN_PRICE",   2.0)
+    SCREENER_MAX_PRICE   = getattr(_cfg_ref, "SCREENER_MAX_PRICE",   500.0)
+    SCREENER_MIN_GAP     = getattr(_cfg_ref, "SCREENER_MIN_GAP",     2.0)
+except ImportError:
+    SCREENER_TOP_GAINERS = 50
+    SCREENER_TOP_ACTIVES = 50
+    SCREENER_MIN_PRICE   = 2.0
+    SCREENER_MAX_PRICE   = 500.0
+    SCREENER_MIN_GAP     = 2.0
+
+# Cache the dynamic universe for the current scan to avoid re-fetching mid-scan
+_universe_cache       = {"tickers": [], "fetched_at": None, "source": "fallback"}
+_universe_lock        = threading.Lock()
+
+
+def _fetch_dynamic_universe():
+    """
+    Pull top gainers + most actives from Alpaca Screener API.
+    Returns (ticker_list, source_description).
+    Falls back to WATCHLIST_FALLBACK on any error.
+    """
+    try:
+        from alpaca.data import ScreenerClient, MostActivesRequest, MarketMoversRequest, MostActivesBy, MarketType
+    except ImportError:
+        print("  ⚠  ScreenerClient not available — using fallback watchlist")
+        return WATCHLIST_FALLBACK, "fallback (screener not installed)"
+
+    tickers = set()
+    sources = []
+
+    try:
+        sc = ScreenerClient(API_KEY, API_SECRET)
+
+        # ── Top gainers (market movers) ────────────────────────────────────────
+        try:
+            movers = sc.get_market_movers(
+                MarketMoversRequest(top=SCREENER_TOP_GAINERS, market_type=MarketType.STOCKS)
+            )
+            gainers = getattr(movers, "gainers", []) or []
+            for g in gainers:
+                sym = getattr(g, "symbol", None) or getattr(g, "ticker", None)
+                if sym:
+                    tickers.add(sym.upper())
+            sources.append(f"{len(gainers)} gainers")
+            print(f"  🌐 Screener: {len(gainers)} top gainers")
+        except Exception as e:
+            print(f"  ⚠  Screener gainers error: {e}")
+
+        # ── Most actives by volume ─────────────────────────────────────────────
+        try:
+            actives = sc.get_most_actives(
+                MostActivesRequest(top=SCREENER_TOP_ACTIVES, by=MostActivesBy.VOLUME)
+            )
+            active_list = getattr(actives, "most_actives", []) or []
+            added = 0
+            for a in active_list:
+                sym = getattr(a, "symbol", None) or getattr(a, "ticker", None)
+                if sym:
+                    tickers.add(sym.upper())
+                    added += 1
+            sources.append(f"{added} most-active")
+            print(f"  🌐 Screener: {added} most actives")
+        except Exception as e:
+            print(f"  ⚠  Screener actives error: {e}")
+
+    except Exception as e:
+        print(f"  ⚠  ScreenerClient init error: {e}")
+
+    if not tickers:
+        print(f"  ⚠  Dynamic universe empty — falling back to watchlist ({len(WATCHLIST_FALLBACK)} tickers)")
+        return WATCHLIST_FALLBACK, "fallback (screener returned empty)"
+
+    # Filter out known bad tickers (warrants, units, preferred shares, ETFs)
+    clean = [t for t in tickers if (
+        len(t) <= 5 and
+        not t.endswith(("W", "U", "R", "P")) and
+        "." not in t and "/" not in t
+    )]
+
+    # Always include fallback list (your hand-curated names stay in)
+    merged = list(set(clean) | set(WATCHLIST_FALLBACK))
+
+    source_str = f"dynamic: {' + '.join(sources)} + {len(WATCHLIST_FALLBACK)} watchlist = {len(merged)} total"
+    print(f"  ✅ Universe: {len(merged)} tickers  ({source_str})")
+    return merged, source_str
+
+
+def get_universe(force_refresh=False):
+    """
+    Return the current scan universe.
+    Refreshes once per scan (cached for 4 minutes to avoid duplicate fetches).
+    """
+    with _universe_lock:
+        now = datetime.now(timezone.utc)
+        age = (now - _universe_cache["fetched_at"]).total_seconds() if _universe_cache["fetched_at"] else 999
+        if not force_refresh and age < 240 and _universe_cache["tickers"]:
+            return _universe_cache["tickers"], _universe_cache["source"]
+
+    tickers, source = _fetch_dynamic_universe()
+
+    with _universe_lock:
+        _universe_cache["tickers"]    = tickers
+        _universe_cache["fetched_at"] = datetime.now(timezone.utc)
+        _universe_cache["source"]     = source
+
+    return tickers, source
 
 
 
@@ -274,7 +424,8 @@ def determine_catalyst(ticker, yf_data, sec_filing, sector, gap_pct):
       1. SEC 8-K filing today (highest confidence — actual filing)
       2. yfinance earnings calendar (scheduled earnings)
       3. Sector + gap heuristic (biotech large gap = likely FDA)
-      4. Default to "news"
+      4. yfinance news headline
+      5. Default to "news"
     Returns (catalyst_type, source, detail)
     """
     # 1. SEC 8-K
@@ -292,7 +443,12 @@ def determine_catalyst(ticker, yf_data, sec_filing, sector, gap_pct):
     if sector in ("Healthcare", "Biotechnology") and gap_pct >= 8:
         return "fda", "heuristic", "Large gap on biotech — possible FDA/clinical"
 
-    # 4. Default
+    # 4. yfinance news headline
+    headline = yf_data.get("yf_headline", "")
+    if headline:
+        return "news", "yfinance_news", headline
+
+    # 5. Default
     return "news", "default", "No specific catalyst identified"
 
 
@@ -306,10 +462,15 @@ def _fetch_one_yf(ticker):
         t    = yf.Ticker(ticker)
         info = t.info
 
-        float_shares = info.get("floatShares") or info.get("sharesOutstanding") or 0
-        float_m      = round(float_shares / 1_000_000, 1) if float_shares else 150.0
-        avg_vol      = info.get("averageVolume10days") or info.get("averageVolume") or 0
-        sector       = info.get("sector") or "—"
+        float_shares   = info.get("floatShares") or info.get("sharesOutstanding") or 0
+        float_m        = round(float_shares / 1_000_000, 1) if float_shares else 150.0
+        shares_out     = info.get("sharesOutstanding") or 0
+        shares_out_m   = round(shares_out / 1_000_000, 1) if shares_out else None
+        shares_short   = info.get("sharesShort") or 0
+        shares_short_m = round(shares_short / 1_000_000, 2) if shares_short else None
+        short_ratio    = round(info.get("shortRatio") or 0, 1) or None  # days to cover
+        avg_vol        = info.get("averageVolume10days") or info.get("averageVolume") or 0
+        sector         = info.get("sector") or "—"
 
         # Check if earnings fall today
         has_earnings = False
@@ -329,16 +490,58 @@ def _fetch_one_yf(ticker):
 
         short_float = round((info.get("shortPercentOfFloat") or 0) * 100, 1)
 
+        # Grab top 5 news headlines — yfinance structure: item["content"]["..."]
+        yf_headline = ""
+        yf_news     = []
+        try:
+            news = t.news or []
+            now_ts = datetime.now(timezone.utc).timestamp()
+            for item in news[:5]:
+                content   = item.get("content") or {}
+                title     = content.get("title") or ""
+                if not title:
+                    continue
+                summary   = content.get("summary") or content.get("description") or ""
+                publisher = (content.get("provider") or {}).get("displayName") or ""
+                url       = (content.get("canonicalUrl") or {}).get("url") or \
+                            (content.get("clickThroughUrl") or {}).get("url") or ""
+                pub_date  = content.get("pubDate") or content.get("displayTime") or ""
+                age_min   = None
+                try:
+                    if pub_date:
+                        from datetime import datetime as dt2
+                        pub_dt  = dt2.fromisoformat(pub_date.replace("Z", "+00:00"))
+                        age_min = int((now_ts - pub_dt.timestamp()) / 60)
+                except Exception:
+                    pass
+                yf_news.append({
+                    "title":     title[:120],
+                    "summary":   summary[:300],
+                    "publisher": publisher[:40],
+                    "url":       url,
+                    "age_min":   age_min,
+                })
+            if yf_news:
+                yf_headline = yf_news[0]["title"]
+        except Exception as e:
+            print(f"  yfinance news error for {ticker}: {e}")
+
         return ticker, {
-            "float":        float_m,
-            "sector":       sector,
-            "avg_vol":      avg_vol,
-            "has_earnings": has_earnings,
-            "short_float":  short_float,
+            "float":          float_m,
+            "shares_out_m":   shares_out_m,
+            "shares_short_m": shares_short_m,
+            "short_ratio":    short_ratio,
+            "sector":         sector,
+            "avg_vol":        avg_vol,
+            "has_earnings":   has_earnings,
+            "short_float":    short_float,
+            "yf_headline":    yf_headline,
+            "yf_news":        yf_news,
         }
     except Exception as e:
         return ticker, {"float": 150.0, "sector": "—", "avg_vol": 0,
-                        "has_earnings": False, "short_float": 0.0}
+                        "has_earnings": False, "short_float": 0.0, "yf_headline": "", "yf_news": [],
+                        "shares_out_m": None, "shares_short_m": None, "short_ratio": None}
 
 
 def enrich_with_yfinance(tickers):
@@ -375,12 +578,13 @@ def enrich_with_yfinance(tickers):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def score_setup(gap_pct, rel_vol, float_m, catalyst):
-    # Relative volume (35%)
-    if rel_vol < 1:    vs = 0
-    elif rel_vol < 2:  vs = 30
-    elif rel_vol < 3:  vs = 60
-    elif rel_vol < 5:  vs = 85
-    else:              vs = 100
+    # Relative volume (35%) -- large caps rarely hit 2x pre-market, scaled down
+    if rel_vol < 0.5:   vs = 0
+    elif rel_vol < 1.0: vs = 25
+    elif rel_vol < 1.5: vs = 50
+    elif rel_vol < 2.5: vs = 75
+    elif rel_vol < 4:   vs = 90
+    else:               vs = 100
 
     # Catalyst quality (30%)
     cs = {"earnings": 100, "fda": 90, "contract": 70, "upgrade": 55, "news": 35}.get(catalyst, 35)
@@ -394,28 +598,28 @@ def score_setup(gap_pct, rel_vol, float_m, catalyst):
     elif float_m < 300: fs = 25
     else:               fs = 10
 
-    # Gap sweet spot 4–20% (15%)
+    # Gap sweet spot 4-30% (15%) -- removed hard penalty over 25%
     if gap_pct < 3:        gs = 20
     elif gap_pct < 4:      gs = 50
     elif gap_pct <= 20:    gs = min(100, gap_pct * 5)
-    elif gap_pct <= 25:    gs = 80
+    elif gap_pct <= 30:    gs = 80
     else:                  gs = 55
 
     total = round(vs * 0.35 + cs * 0.30 + fs * 0.20 + gs * 0.15)
 
     checks = {
-        "relVol":      rel_vol >= 2,
-        "catalyst":    catalyst in ("earnings", "fda"),
-        "float":       float_m < 100,
-        "gap":         4 <= gap_pct <= 20,
-        "gapExtended": gap_pct > 25,
+        "relVol":      rel_vol >= 1.0,
+        "catalyst":    catalyst in ("earnings", "fda", "contract", "upgrade", "news"),
+        "float":       float_m < 100,   # info only — not used in passes
+        "gap":         4 <= gap_pct <= 30,
+        "gapExtended": gap_pct > 30,
     }
-    passes = sum([checks["relVol"], checks["catalyst"], checks["float"], checks["gap"]])
+    passes = sum([checks["relVol"], checks["catalyst"], checks["gap"]])  # float removed
 
     if checks["gapExtended"]:  priority = "C"
-    elif passes == 4:          priority = "A"
-    elif passes == 3:          priority = "B"
-    elif passes == 2:          priority = "C"
+    elif passes == 3:          priority = "A"
+    elif passes == 2:          priority = "B"
+    elif passes == 1:          priority = "C"
     else:                      priority = "SKIP"
 
     return {"total": total, "gap": round(gs), "vol": round(vs), "float": round(fs),
@@ -566,9 +770,22 @@ def run_scan(filters):
     print(sep)
 
     # ── 1. Alpaca snapshots ────────────────────────────────────────────────────
-    client    = StockHistoricalDataClient(API_KEY, API_SECRET)
-    req       = StockSnapshotRequest(symbol_or_symbols=WATCHLIST)
-    snapshots = client.get_stock_snapshot(req)
+    client   = StockHistoricalDataClient(API_KEY, API_SECRET)
+    universe, universe_source = get_universe(force_refresh=True)
+    print(f"  Universe: {len(universe)} tickers  [{universe_source}]")
+
+    # Alpaca snapshot limit is 1000 — chunk if needed
+    all_snapshots = {}
+    chunk_size = 500
+    for i in range(0, len(universe), chunk_size):
+        chunk = universe[i:i+chunk_size]
+        try:
+            req   = StockSnapshotRequest(symbol_or_symbols=chunk)
+            chunk_snaps = client.get_stock_snapshot(req)
+            all_snapshots.update(chunk_snaps)
+        except Exception as e:
+            print(f"  ⚠  Snapshot chunk {i//chunk_size+1} error: {e}")
+    snapshots = all_snapshots
     print(f"  Alpaca: {len(snapshots)} snapshots received")
 
     # ── 2. Filter for gappers ─────────────────────────────────────────────────
@@ -695,25 +912,29 @@ def run_scan(filters):
         # PM high / day open — already extracted from daily_bar
         pm_high     = c.get("pmHigh")
         day_open    = c.get("dayOpen")
-        short_float = yfd.get("short_float", 0.0)
+        short_float    = yfd.get("short_float", 0.0)
+        shares_out_m   = yfd.get("shares_out_m")
+        shares_short_m = yfd.get("shares_short_m")
+        short_ratio    = yfd.get("short_ratio")
 
         # ── Trade verdict ──────────────────────────────────────────────────────
         # GO:   A/B rank + above VWAP + rel_vol ≥2x + tight spread
         # WATCH: B/C rank or one condition missing
         # SKIP:  C rank or rel_vol <1x or very wide spread
         s        = score_setup(c["gap"], rel_vol, float_m, catalyst)
-        rank_val = s.get("rank", "C")
+        rank_val = s.get("priority", "C")
         go_conditions = [
             rank_val in ("A", "B"),
             above_vwap is True,
-            rel_vol >= 2.0,
+            rel_vol >= 1.0,                                     # was 2.0 — too strict for large caps
             spread_pct is not None and spread_pct < 0.5,
-            float_m < 100,
         ]
         go_count = sum(go_conditions)
-        if rank_val == "A" and go_count >= 4:
+        if rank_val == "A" and go_count >= 3:
             verdict = "GO"
-        elif rank_val in ("A","B") and go_count >= 3:
+        elif rank_val in ("A","B") and go_count >= 2:
+            verdict = "WATCH"
+        elif rank_val == "C" and go_count >= 3:                 # strong setup even with C rank
             verdict = "WATCH"
         else:
             verdict = "SKIP"
@@ -733,13 +954,17 @@ def run_scan(filters):
             "aboveVwap":   above_vwap,
             "pmHigh":      pm_high,
             "dayOpen":     day_open,
-            "shortFloat":  short_float,
+            "shortFloat":    short_float,
+            "sharesOutM":    shares_out_m,
+            "sharesShortM":  shares_short_m,
+            "shortRatio":    short_ratio,
             "verdict":     verdict,
             "catalyst":    catalyst,
             "catSource":   cat_source,
             "catDetail":   cat_detail,
             "secFiling":   {"title": sec_filing["title"][:80], "url": sec_filing["url"],
                             "filed_at": sec_filing["filed_at"]} if sec_filing else None,
+            "yfNews":      yf_data.get("yf_news", []),
             "spreadPct":   spread_pct,
             "technicals":  tech_data.get(ticker),
             "score":       score_setup(c["gap"], rel_vol, float_m, catalyst),
@@ -753,7 +978,8 @@ def run_scan(filters):
     results.sort(key=lambda x: (pord.get(x["score"]["priority"], 4), -x["score"]["total"]))
 
     meta = {"alpaca_count": len(snapshots), "yf_enriched": len(cand_tickers),
-            "earnings_today": earnings_today, "skipped": skipped}
+            "earnings_today": earnings_today, "skipped": skipped,
+            "universe_size": len(universe), "universe_source": universe_source}
     print(f"  ✅ {len(results)} gappers  |  {len(earnings_today)} earnings today")
     print(f"{sep}\n")
     return results, meta
@@ -871,8 +1097,28 @@ def api_test_catalysts():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/test-technicals", methods=["GET"])
-def api_test_technicals():
+@app.route("/api/test-news", methods=["GET"])
+def api_test_news():
+    """
+    Debug endpoint — shows raw yfinance news for a ticker.
+    Open: http://localhost:5001/api/test-news?ticker=RIOT
+    """
+    ticker = request.args.get("ticker", "RIOT").upper()
+    try:
+        import yfinance as yf, json as _json
+        t    = yf.Ticker(ticker)
+        news = t.news or []
+        return jsonify({
+            "ticker":      ticker,
+            "count":       len(news),
+            "raw_first":   news[0] if news else None,
+            "all_titles":  [n.get("title") or (n.get("content") or {}).get("title") for n in news[:5]],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
     """
     Debug endpoint — tests yfinance history fetch for a single ticker.
     Open: http://localhost:5001/api/test-technicals?ticker=AAPL
@@ -1238,6 +1484,1059 @@ def api_close_all():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Email Alerts
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _send_email(subject, html_body, text_body=None):
+    """Send alert email via Gmail SMTP. Returns (ok, error_msg)."""
+    if not EMAIL_ENABLED:
+        return False, "email disabled"
+    if not all([EMAIL_FROM, EMAIL_APP_PASSWORD, EMAIL_TO]):
+        return False, "email not configured in config.py"
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = f"Gap Scanner <{EMAIL_FROM}>"
+        msg["To"]      = EMAIL_TO
+        if text_body:
+            msg.attach(MIMEText(text_body, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
+        pw = EMAIL_APP_PASSWORD.replace(" ", "")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(EMAIL_FROM, pw)
+            smtp.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+        print(f"  📧 Email sent: {subject}")
+        return True, None
+    except Exception as e:
+        print(f"  ❌ Email error: {e}")
+        return False, str(e)
+
+
+def _build_alert_email(results, new_tickers, scan_time_str):
+    """Build HTML + plain-text email for alert."""
+    go_list    = [r for r in results if r.get("verdict") == "GO"]
+    watch_list = [r for r in results if r.get("verdict") == "WATCH"]
+    new_list   = [r for r in results if r.get("ticker") in new_tickers]
+
+    # Subject line
+    counts = []
+    if go_list:    counts.append(f"{len(go_list)} GO")
+    if watch_list: counts.append(f"{len(watch_list)} WATCH")
+    if new_list and ALERT_ON_NEW:
+        new_not_alerted = [r for r in new_list if r.get("verdict") not in ("GO","WATCH")]
+        if new_not_alerted: counts.append(f"{len(new_not_alerted)} new")
+    subject = f"🚨 GAP SCANNER — {', '.join(counts) if counts else 'Scan complete'} [{scan_time_str} ET]"
+
+    # Which tickers to include in email
+    alert_set = set()
+    if ALERT_ON_GO:    alert_set.update(r["ticker"] for r in go_list)
+    if ALERT_ON_WATCH: alert_set.update(r["ticker"] for r in watch_list)
+    if ALERT_ON_NEW:   alert_set.update(r["ticker"] for r in new_list)
+    alert_results = [r for r in results if r["ticker"] in alert_set]
+
+    if not alert_results:
+        subject = f"📊 GAP SCANNER — No alerts [{scan_time_str} ET]"
+
+    # ── HTML ──────────────────────────────────────────────────────────────────
+    def verdict_badge(v):
+        color = {"GO": "#00ff88", "WATCH": "#ffd700", "SKIP": "#555"}.get(v, "#555")
+        bg    = {"GO": "rgba(0,255,136,0.15)", "WATCH": "rgba(255,215,0,0.12)", "SKIP": "transparent"}.get(v, "transparent")
+        return f'<span style="padding:2px 8px;border:1px solid {color};color:{color};background:{bg};border-radius:3px;font-weight:700;font-size:13px">{v}</span>'
+
+    def catalyst_badge(c):
+        color = {"earnings":"#ff6b6b","fda":"#ff6b6b","contract":"#ffd700","upgrade":"#00bfff","news":"#00e5ff"}.get(c,"#888")
+        return f'<span style="padding:1px 6px;border-radius:2px;background:{color}22;color:{color};font-size:11px;border:1px solid {color}44">{c.upper()}</span>'
+
+    rows_html = ""
+    for r in alert_results:
+        t      = r.get("trade", {})
+        is_new = r["ticker"] in new_tickers
+        new_badge = ' <span style="font-size:10px;color:#00e5ff;padding:1px 4px;border:1px solid #00e5ff44;border-radius:2px">NEW</span>' if is_new else ""
+        rows_html += f"""
+        <tr style="border-bottom:1px solid #222">
+          <td style="padding:12px 8px;white-space:nowrap">
+            {verdict_badge(r.get("verdict","SKIP"))}&nbsp;&nbsp;
+            <b style="font-size:16px;color:#e8eaf0">{r["ticker"]}</b>{new_badge}
+          </td>
+          <td style="padding:12px 8px;color:#00ff88;font-weight:700">+{r.get("gap",0):.1f}%</td>
+          <td style="padding:12px 8px;color:#e8eaf0">${r.get("price",0):.2f}</td>
+          <td style="padding:12px 8px">{catalyst_badge(r.get("catalyst","news"))}</td>
+          <td style="padding:12px 8px;color:#aaa;font-size:12px">{r.get("float",0):.0f}M float</td>
+          <td style="padding:12px 8px;color:#aaa;font-size:12px">{r.get("shortFloat",0):.1f}% short</td>
+          <td style="padding:12px 8px">
+            <span style="color:#aaa;font-size:11px">Stop </span><span style="color:#ff6b6b">${t.get("stop","—")}</span>
+            &nbsp;
+            <span style="color:#aaa;font-size:11px">T1 </span><span style="color:#00ff88">${t.get("target1","—")}</span>
+          </td>
+          <td style="padding:12px 8px;color:#aaa;font-size:12px">{r.get("score",{}).get("total",0)} score</td>
+        </tr>"""
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="8" style="padding:20px;color:#555;text-align:center">No GO/WATCH setups this scan</td></tr>'
+
+    html = f"""<!DOCTYPE html>
+<html><body style="background:#0d1117;color:#e8eaf0;font-family:'Courier New',monospace;margin:0;padding:20px">
+<div style="max-width:780px;margin:0 auto">
+  <div style="border-bottom:2px solid #00ff88;padding-bottom:12px;margin-bottom:20px">
+    <span style="font-size:22px;font-weight:900;letter-spacing:3px;color:#00ff88">▸ GAP SCANNER</span>
+    <span style="float:right;color:#555;font-size:12px;line-height:2.2">{scan_time_str} ET &nbsp;|&nbsp; {len(results)} gappers found</span>
+  </div>
+  <table width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+    <thead>
+      <tr style="border-bottom:1px solid #333">
+        <th style="padding:6px 8px;text-align:left;color:#555;font-size:11px;letter-spacing:1px">VERDICT / TICKER</th>
+        <th style="padding:6px 8px;text-align:left;color:#555;font-size:11px;letter-spacing:1px">GAP</th>
+        <th style="padding:6px 8px;text-align:left;color:#555;font-size:11px;letter-spacing:1px">PRICE</th>
+        <th style="padding:6px 8px;text-align:left;color:#555;font-size:11px;letter-spacing:1px">CATALYST</th>
+        <th style="padding:6px 8px;text-align:left;color:#555;font-size:11px;letter-spacing:1px">FLOAT</th>
+        <th style="padding:6px 8px;text-align:left;color:#555;font-size:11px;letter-spacing:1px">SHORT</th>
+        <th style="padding:6px 8px;text-align:left;color:#555;font-size:11px;letter-spacing:1px">LEVELS</th>
+        <th style="padding:6px 8px;text-align:left;color:#555;font-size:11px;letter-spacing:1px">SCORE</th>
+      </tr>
+    </thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+  <div style="margin-top:24px;padding-top:12px;border-top:1px solid #222;color:#555;font-size:11px">
+    <a href="http://localhost:5001" style="color:#00e5ff">Open Scanner ↗</a>
+    &nbsp;&nbsp;|&nbsp;&nbsp; Auto-scan every {SCAN_INTERVAL_MIN}min &nbsp;|&nbsp; {SCAN_WINDOW_START}–{SCAN_WINDOW_END} ET
+  </div>
+</div>
+</body></html>"""
+
+    # ── Plain text fallback ───────────────────────────────────────────────────
+    lines = [f"GAP SCANNER ALERT — {scan_time_str} ET", "="*50]
+    for r in alert_results:
+        t = r.get("trade", {})
+        lines.append(f"\n[{r.get('verdict','SKIP')}] {r['ticker']}  +{r.get('gap',0):.1f}%  ${r.get('price',0):.2f}  {r.get('catalyst','').upper()}")
+        lines.append(f"  Score:{r.get('score',{}).get('total',0)}  Float:{r.get('float',0):.0f}M  Short:{r.get('shortFloat',0):.1f}%")
+        lines.append(f"  Stop:${t.get('stop','—')}  T1:${t.get('target1','—')}  T2:${t.get('target2','—')}")
+    lines += ["", f"Open scanner: http://localhost:5001"]
+    text = "\n".join(lines)
+
+    return subject, html, text
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Scheduler — auto-scan during market window
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_scheduler_state = {
+    "last_scan_tickers": set(),   # tickers from previous scan cycle
+    "last_alert_time":   None,    # avoid duplicate emails within same minute
+    "scans_today":       0,
+    "alerts_sent_today": 0,
+}
+
+def _in_scan_window():
+    """True if current ET time is within configured scan window."""
+    try:
+        et = datetime.now(timezone(timedelta(hours=-5)))  # EST; fine for DST offset ±1h
+        # Try pytz for proper EDT/EST handling
+        try:
+            import pytz
+            et = datetime.now(pytz.timezone("America/New_York"))
+        except ImportError:
+            pass
+        now_str  = et.strftime("%H:%M")
+        is_wkday = et.weekday() < 5  # Mon–Fri only
+        return is_wkday and SCAN_WINDOW_START <= now_str <= SCAN_WINDOW_END
+    except Exception:
+        return False
+
+
+def _run_scheduled_scan():
+    """Trigger a scan and send email alerts if warranted."""
+    et = datetime.now(timezone(timedelta(hours=-5)))
+    try:
+        import pytz
+        et = datetime.now(pytz.timezone("America/New_York"))
+    except ImportError:
+        pass
+    scan_time_str = et.strftime("%I:%M %p").lstrip("0")
+    print(f"\n⏰  Scheduled scan [{scan_time_str} ET] ...")
+
+    # Run the scan (reuse existing scan logic)
+    try:
+        with app.test_request_context():
+            resp = api_scan()
+            data = resp.get_json() if hasattr(resp, "get_json") else {}
+    except Exception as e:
+        print(f"  Scheduled scan error: {e}")
+        return
+
+    results = data.get("results", [])
+    _scheduler_state["scans_today"] += 1
+    print(f"  → {len(results)} gappers found")
+
+    # Determine which tickers are new vs last scan
+    current_tickers = {r["ticker"] for r in results}
+    prev_tickers    = _scheduler_state["last_scan_tickers"]
+    new_tickers     = current_tickers - prev_tickers
+    _scheduler_state["last_scan_tickers"] = current_tickers
+
+    # Shadow log — queue GO/WATCH setups for 30-min outcome check
+    _log_setups(results)
+
+    # Auto-execution — place bracket orders for qualifying GO setups
+    if AUTO_TRADE_ENABLED:
+        _auto_execute(results)
+
+    # Decide whether to send alert
+    has_go    = ALERT_ON_GO    and any(r.get("verdict") == "GO"    for r in results)
+    has_watch = ALERT_ON_WATCH and any(r.get("verdict") == "WATCH" for r in results)
+    has_new   = ALERT_ON_NEW   and bool(new_tickers)
+
+    if not (has_go or has_watch or has_new):
+        print(f"  → No alert conditions met, skipping email")
+        return
+
+    # Deduplicate: don't send same-minute duplicate
+    alert_key = et.strftime("%Y-%m-%d %H:%M")
+    if _scheduler_state["last_alert_time"] == alert_key:
+        print(f"  → Alert already sent this minute, skipping")
+        return
+    _scheduler_state["last_alert_time"] = alert_key
+
+    subject, html, text = _build_alert_email(results, new_tickers, scan_time_str)
+    ok, err = _send_email(subject, html, text)
+    if ok:
+        _scheduler_state["alerts_sent_today"] += 1
+
+
+def _scheduler_loop():
+    """Background thread — wakes every minute, scans if in window."""
+    print(f"  🕐 Scheduler started — scanning {SCAN_WINDOW_START}–{SCAN_WINDOW_END} ET every {SCAN_INTERVAL_MIN}min")
+    last_run = None
+    while True:
+        try:
+            # Resolve any pending 30-min lookbacks
+            _resolve_pending()
+
+            if _in_scan_window():
+                now_min = datetime.now().strftime("%Y-%m-%d %H:%M")
+                # Only run once per SCAN_INTERVAL_MIN slot
+                et = datetime.now(timezone(timedelta(hours=-5)))
+                slot = et.minute // SCAN_INTERVAL_MIN
+                slot_key = f"{et.strftime('%Y-%m-%d %H')}-{slot}"
+                if slot_key != last_run:
+                    last_run = slot_key
+                    threading.Thread(target=_run_scheduled_scan, daemon=True).start()
+        except Exception as e:
+            print(f"  Scheduler loop error: {e}")
+        time.sleep(30)  # check every 30s
+
+
+def _start_scheduler():
+    t = threading.Thread(target=_scheduler_loop, daemon=True)
+    t.start()
+
+
+# ── Manual email test endpoint ────────────────────────────────────────────────
+@app.route("/api/test-email", methods=["POST"])
+def api_test_email():
+    """Send a test email using current scan results."""
+    with _cache_lock:
+        results = _cache.get("results", [])
+    if not results:
+        return jsonify({"ok": False, "error": "No scan results — run a scan first"}), 400
+    et = datetime.now(timezone(timedelta(hours=-5)))
+    try:
+        import pytz
+        et = datetime.now(pytz.timezone("America/New_York"))
+    except ImportError:
+        pass
+    scan_time_str = et.strftime("%I:%M %p").lstrip("0")
+    subject, html, text = _build_alert_email(results, set(), scan_time_str + " [TEST]")
+    ok, err = _send_email(subject, html, text)
+    return jsonify({"ok": ok, "error": err, "to": EMAIL_TO if ok else None})
+
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Auto-Execution Engine
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Tracks auto-trade state across the session
+_auto_state = {
+    "trades_today":    0,
+    "last_reset_day":  None,          # date string YYYY-MM-DD
+    "open_orders":     {},            # order_id → trade_info dict
+    "executed":        set(),         # tickers already traded today
+    "daily_pnl":       0.0,          # realized P&L for today ($)
+    "daily_trades":    [],            # list of {ticker, pnl, reason, time}
+    "kill_switch":     False,         # True = auto-trade paused by loss limit
+    "kill_reason":     "",            # why kill switch fired
+}
+_auto_lock = threading.Lock()
+
+
+def _auto_reset_daily():
+    """Reset daily counters if it's a new trading day."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _auto_lock:
+        if _auto_state["last_reset_day"] != today:
+            _auto_state["trades_today"]   = 0
+            _auto_state["last_reset_day"] = today
+            _auto_state["executed"]       = set()
+            _auto_state["daily_pnl"]      = 0.0
+            _auto_state["daily_trades"]   = []
+            _auto_state["kill_switch"]    = False
+            _auto_state["kill_reason"]    = ""
+            print(f"  🔄 Auto-trade counters reset for {today}")
+
+
+def _send_buy_email(ticker, shares, entry_price, stop, target1, gap_pct, catalyst, score, verdict):
+    """Email notification when a bracket buy order is placed."""
+    et = datetime.now(timezone(timedelta(hours=-5)))
+    try:
+        import pytz
+        et = datetime.now(pytz.timezone("America/New_York"))
+    except ImportError:
+        pass
+    time_str  = et.strftime("%I:%M %p").lstrip("0")
+    pos_size  = round(shares * entry_price, 2)
+    risk_amt  = round(shares * (entry_price - stop), 2)
+    reward    = round(shares * (target1 - entry_price), 2)
+
+    subject = f"🟢 AUTO-BUY {ticker}  {shares}sh @ ${entry_price:.2f}  [{time_str} ET]"
+    html = f"""
+    <div style="background:#0d1117;color:#e6edf3;font-family:monospace;padding:24px;border-radius:8px;max-width:520px">
+      <div style="font-size:22px;font-weight:bold;letter-spacing:3px;color:#3fb950;margin-bottom:4px">
+        🟢 AUTO-BUY EXECUTED</div>
+      <div style="font-size:13px;color:#8b949e;margin-bottom:20px">{time_str} ET — Paper Account</div>
+
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:6px 0;color:#8b949e">Ticker</td>
+            <td style="padding:6px 0;color:#58a6ff;font-size:20px;font-weight:bold">{ticker}</td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">Shares</td>
+            <td style="padding:6px 0">{shares} shares</td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">Entry Price</td>
+            <td style="padding:6px 0;font-weight:bold">${entry_price:.2f}</td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">Position Size</td>
+            <td style="padding:6px 0">${pos_size:,.2f}</td></tr>
+        <tr style="border-top:1px solid #21262d">
+          <td style="padding:8px 0;color:#8b949e">Stop Loss</td>
+          <td style="padding:8px 0;color:#f85149;font-weight:bold">${stop:.2f}
+            <span style="color:#8b949e;font-size:12px"> (risk ${risk_amt:.2f})</span></td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">Target</td>
+            <td style="padding:6px 0;color:#3fb950;font-weight:bold">${target1:.2f}
+              <span style="color:#8b949e;font-size:12px"> (reward ${reward:.2f})</span></td></tr>
+        <tr style="border-top:1px solid #21262d">
+          <td style="padding:8px 0;color:#8b949e">Gap</td>
+          <td style="padding:8px 0">{gap_pct:.1f}%</td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">Catalyst</td>
+            <td style="padding:6px 0;color:#d29922">{catalyst or '—'}</td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">Score / Verdict</td>
+            <td style="padding:6px 0">{score} / <b style="color:#3fb950">{verdict}</b></td></tr>
+      </table>
+      <div style="margin-top:16px;font-size:11px;color:#484f58;border-top:1px solid #21262d;padding-top:12px">
+        Bracket order placed — stop and target will execute automatically.</div>
+    </div>"""
+    text = f"AUTO-BUY {ticker}: {shares}sh @ ${entry_price:.2f}  stop=${stop:.2f}  target=${target1:.2f}  gap={gap_pct:.1f}%"
+    _send_email(subject, html, text)
+
+
+def _send_fill_email(ticker, side, shares, fill_price, entry_price, stop, target1,
+                     order_id, fill_reason, trade_pnl=None, daily_pnl=None,
+                     kill_fired=False, kill_msg=""):
+    """Email when a position is closed — stop hit or target hit."""
+    et = datetime.now(timezone(timedelta(hours=-5)))
+    try:
+        import pytz
+        et = datetime.now(pytz.timezone("America/New_York"))
+    except ImportError:
+        pass
+    time_str = et.strftime("%I:%M %p").lstrip("0")
+
+    pnl      = trade_pnl if trade_pnl is not None else round((fill_price - entry_price) * shares, 2)
+    pnl_pct  = round((fill_price - entry_price) / entry_price * 100, 2) if entry_price else 0
+    won      = pnl >= 0
+    color    = "#3fb950" if won else "#f85149"
+    icon     = "✅" if fill_reason == "target" else ("🛑" if fill_reason == "stop" else "📤")
+    label    = "TARGET HIT" if fill_reason == "target" else ("STOPPED OUT" if fill_reason == "stop" else "POSITION CLOSED")
+
+    kill_banner = ""
+    if kill_fired:
+        kill_color  = "#f85149" if "loss" in kill_msg.lower() else "#3fb950"
+        kill_icon   = "🛑" if "loss" in kill_msg.lower() else "🏆"
+        kill_banner = f"""
+      <div style="background:{kill_color}22;border:1px solid {kill_color};border-radius:6px;
+                  padding:12px;margin:16px 0;font-size:13px;color:{kill_color};font-weight:bold">
+        {kill_icon} AUTO-TRADE PAUSED — {kill_msg}
+      </div>"""
+
+    daily_row = ""
+    if daily_pnl is not None:
+        daily_color = "#3fb950" if daily_pnl >= 0 else "#f85149"
+        daily_row = f"""
+        <tr style="border-top:2px solid #21262d">
+          <td style="padding:8px 0;color:#8b949e">Day P&amp;L</td>
+          <td style="padding:8px 0;font-size:18px;font-weight:bold;color:{daily_color}">
+            {'+'if daily_pnl>=0 else ''}{daily_pnl:.2f}</td></tr>"""
+
+    subject = f"{icon} {label} {ticker}  P&L: {'+'if won else ''}{pnl:.2f}  [{time_str} ET]"
+    if kill_fired:
+        subject = f"🛑 {subject} — AUTO-TRADE PAUSED"
+
+    html = f"""
+    <div style="background:#0d1117;color:#e6edf3;font-family:monospace;padding:24px;border-radius:8px;max-width:520px">
+      <div style="font-size:22px;font-weight:bold;letter-spacing:3px;color:{color};margin-bottom:4px">
+        {icon} {label}</div>
+      <div style="font-size:13px;color:#8b949e;margin-bottom:20px">{time_str} ET — Paper Account</div>
+      {kill_banner}
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:6px 0;color:#8b949e">Ticker</td>
+            <td style="padding:6px 0;color:#58a6ff;font-size:20px;font-weight:bold">{ticker}</td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">Shares</td>
+            <td style="padding:6px 0">{shares}</td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">Entry Price</td>
+            <td style="padding:6px 0">${entry_price:.2f}</td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">Exit Price</td>
+            <td style="padding:6px 0;font-weight:bold">${fill_price:.2f}</td></tr>
+        <tr style="border-top:1px solid #21262d">
+          <td style="padding:8px 0;color:#8b949e">Trade P&amp;L</td>
+          <td style="padding:8px 0;font-size:22px;font-weight:bold;color:{color}">
+            {'+'if won else ''}{pnl:.2f}</td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">P&amp;L %</td>
+            <td style="padding:6px 0;color:{color}">{'+'if won else ''}{pnl_pct:.2f}%</td></tr>
+        {daily_row}
+        <tr style="border-top:1px solid #21262d">
+          <td style="padding:8px 0;color:#8b949e">Stop was</td>
+          <td style="padding:8px 0;color:#f85149">${stop:.2f}</td></tr>
+        <tr><td style="padding:6px 0;color:#8b949e">Target was</td>
+            <td style="padding:6px 0;color:#3fb950">${target1:.2f}</td></tr>
+      </table>
+      <div style="margin-top:16px;font-size:11px;color:#484f58;border-top:1px solid #21262d;padding-top:12px">
+        Order ID: {order_id}</div>
+    </div>"""
+    text = f"{label} {ticker}: exit ${fill_price:.2f}  P&L {'+'if won else ''}{pnl:.2f} ({'+'if won else ''}{pnl_pct:.2f}%)"
+    if daily_pnl is not None:
+        text += f"  |  Day P&L: {'+'if daily_pnl>=0 else ''}{daily_pnl:.2f}"
+    _send_email(subject, html, text)
+
+
+def _auto_execute(results):
+    """
+    Called after each scheduled scan.
+    Places bracket buy orders for qualifying GO setups above VWAP.
+    Returns list of execution dicts for logging.
+    """
+    if not AUTO_TRADE_ENABLED:
+        return []
+    if not TRADING_OK:
+        print("  ⚠  Auto-trade: trading not configured")
+        return []
+
+    _auto_reset_daily()
+
+    with _auto_lock:
+        trades_today = _auto_state["trades_today"]
+        executed     = _auto_state["executed"]
+        kill_switch  = _auto_state["kill_switch"]
+        kill_reason  = _auto_state["kill_reason"]
+
+    if kill_switch:
+        print(f"  🛑 Auto-trade KILL SWITCH active: {kill_reason}")
+        return []
+
+    if trades_today >= AUTO_MAX_TRADES_PER_DAY:
+        print(f"  🚫 Auto-trade: daily limit reached ({AUTO_MAX_TRADES_PER_DAY})")
+        return []
+
+    # Get open positions to avoid doubling up
+    try:
+        tc = _tc()
+        open_positions = {p.symbol for p in tc.get_all_positions()}
+    except Exception as e:
+        print(f"  ⚠  Auto-trade: could not fetch positions: {e}")
+        open_positions = set()
+
+    placed = []
+    for r in results:
+        with _auto_lock:
+            if _auto_state["trades_today"] >= AUTO_MAX_TRADES_PER_DAY:
+                break
+
+        ticker  = r.get("ticker", "")
+        verdict = r.get("verdict", "")
+        score   = r.get("score", {})
+
+        # ── Filters ───────────────────────────────────────────────────────────
+        if verdict not in AUTO_VERDICTS:
+            continue
+        if score.get("total", 0) < AUTO_MIN_SCORE:
+            print(f"  ⏭  {ticker}: score {score.get('total',0)} < {AUTO_MIN_SCORE}, skip")
+            continue
+        if AUTO_REQUIRE_ABOVE_VWAP and not r.get("aboveVwap"):
+            print(f"  ⏭  {ticker}: below VWAP, skip")
+            continue
+        if ticker in open_positions:
+            print(f"  ⏭  {ticker}: already have position, skip")
+            continue
+        if ticker in executed:
+            print(f"  ⏭  {ticker}: already traded today, skip")
+            continue
+
+        # ── Trade parameters ──────────────────────────────────────────────────
+        trade       = r.get("trade", {})
+        shares      = trade.get("shares", 0)
+        stop        = trade.get("stop")
+        target1     = trade.get("target1")
+        entry_price = r.get("price", 0)
+        gap_pct     = r.get("gap", 0)
+        catalyst    = r.get("catalyst", "")
+
+        if not shares or shares < 1:
+            print(f"  ⏭  {ticker}: 0 shares calculated, skip")
+            continue
+        if not stop or not target1:
+            print(f"  ⏭  {ticker}: missing stop/target, skip")
+            continue
+
+        # ── Place bracket market order ────────────────────────────────────────
+        try:
+            order_req = MarketOrderRequest(
+                symbol        = ticker,
+                qty           = shares,
+                side          = OrderSide.BUY,
+                time_in_force = TimeInForce.DAY,
+                order_class   = OrderClass.BRACKET,
+                stop_loss     = {"stop_price":  round(float(stop),    2)},
+                take_profit   = {"limit_price": round(float(target1), 2)},
+            )
+            order = _tc().submit_order(order_req)
+            order_id = str(order.id)
+
+            print(f"  ✅ AUTO-BUY {ticker}: {shares}sh @ ~${entry_price:.2f}  stop=${stop:.2f}  target=${target1:.2f}  [{order_id[:8]}]")
+
+            trade_info = {
+                "ticker":      ticker,
+                "order_id":    order_id,
+                "shares":      shares,
+                "entry_price": entry_price,
+                "stop":        float(stop),
+                "target1":     float(target1),
+                "gap_pct":     gap_pct,
+                "catalyst":    catalyst,
+                "score":       score.get("total", 0),
+                "verdict":     verdict,
+                "placed_at":   datetime.now(timezone.utc).isoformat(),
+                "status":      "open",
+            }
+
+            # Track state
+            with _auto_lock:
+                _auto_state["trades_today"] += 1
+                _auto_state["executed"].add(ticker)
+                _auto_state["open_orders"][order_id] = trade_info
+
+            placed.append(trade_info)
+
+            # Send buy email
+            threading.Thread(
+                target=_send_buy_email,
+                args=(ticker, shares, entry_price, float(stop), float(target1),
+                      gap_pct, catalyst, score.get("total", 0), verdict),
+                daemon=True
+            ).start()
+
+        except Exception as e:
+            print(f"  ❌ AUTO-BUY {ticker} failed: {e}")
+
+    if placed:
+        print(f"  📊 Auto-trade: {len(placed)} order(s) placed today ({_auto_state['trades_today']}/{AUTO_MAX_TRADES_PER_DAY})")
+
+    return placed
+
+
+def _monitor_orders():
+    """
+    Background thread — polls open auto-orders every AUTO_MONITOR_INTERVAL seconds.
+    Detects fills/stops/cancels and sends email notifications.
+    """
+    print(f"  👁  Order monitor started (checking every {AUTO_MONITOR_INTERVAL}s)")
+    while True:
+        try:
+            with _auto_lock:
+                watching = dict(_auto_state["open_orders"])  # copy
+
+            if watching and TRADING_OK:
+                tc = _tc()
+                for order_id, info in watching.items():
+                    try:
+                        order = tc.get_order_by_id(order_id)
+                        status = order.status.value if hasattr(order.status, "value") else str(order.status)
+
+                        if status in ("filled",):
+                            # Main buy order filled — now watching legs
+                            with _auto_lock:
+                                if _auto_state["open_orders"].get(order_id, {}).get("status") == "open":
+                                    _auto_state["open_orders"][order_id]["status"] = "filled"
+                                    print(f"  ✅ Order filled: {info['ticker']} [{order_id[:8]}]")
+
+                        elif status in ("canceled", "expired", "replaced"):
+                            with _auto_lock:
+                                _auto_state["open_orders"].pop(order_id, None)
+                            print(f"  ↩  Order {status}: {info['ticker']} [{order_id[:8]}]")
+
+                    except Exception as e:
+                        # Order may have been replaced by bracket legs — check positions
+                        try:
+                            positions = {p.symbol: p for p in tc.get_all_positions()}
+                            ticker = info["ticker"]
+                            if ticker not in positions:
+                                # Position is closed — fetch recent orders to determine exit price
+                                closed = tc.get_orders(filter=GetOrdersRequest(
+                                    symbols=[ticker],
+                                    status=QueryOrderStatus.CLOSED,
+                                    limit=5,
+                                ))
+                                exit_order = None
+                                for o in closed:
+                                    ostat = o.status.value if hasattr(o.status, "value") else str(o.status)
+                                    oside = o.side.value  if hasattr(o.side,   "value") else str(o.side)
+                                    if ostat == "filled" and oside == "sell":
+                                        exit_order = o
+                                        break
+
+                                if exit_order:
+                                    fill_price = float(exit_order.filled_avg_price or info["entry_price"])
+                                    entry_p    = info["entry_price"]
+                                    stop_p     = info["stop"]
+                                    target_p   = info["target1"]
+                                    shares_n   = info["shares"]
+
+                                    # Determine reason
+                                    if fill_price <= stop_p * 1.002:
+                                        reason = "stop"
+                                    elif fill_price >= target_p * 0.998:
+                                        reason = "target"
+                                    else:
+                                        reason = "manual"
+
+                                    trade_pnl = round((fill_price - entry_p) * shares_n, 2)
+                                    print(f"  📤 Position closed: {ticker} @ ${fill_price:.2f} [{reason}]  P&L: ${trade_pnl:+.2f}")
+
+                                    # Update daily P&L state
+                                    with _auto_lock:
+                                        _auto_state["daily_pnl"] = round(_auto_state["daily_pnl"] + trade_pnl, 2)
+                                        _auto_state["daily_trades"].append({
+                                            "ticker": ticker,
+                                            "pnl":    trade_pnl,
+                                            "reason": reason,
+                                            "time":   datetime.now().strftime("%H:%M"),
+                                            "entry":  entry_p,
+                                            "exit":   fill_price,
+                                            "shares": shares_n,
+                                        })
+                                        new_daily_pnl = _auto_state["daily_pnl"]
+
+                                    # ── Kill switch check ──────────────────────
+                                    kill_fired = False
+                                    kill_msg   = ""
+                                    if AUTO_DAILY_LOSS_LIMIT != 0 and new_daily_pnl <= AUTO_DAILY_LOSS_LIMIT:
+                                        with _auto_lock:
+                                            _auto_state["kill_switch"] = True
+                                            _auto_state["kill_reason"] = f"Daily loss limit hit: ${new_daily_pnl:.2f} ≤ ${AUTO_DAILY_LOSS_LIMIT}"
+                                        kill_fired = True
+                                        kill_msg   = f"Daily loss limit hit: ${new_daily_pnl:.2f}"
+                                        print(f"  🛑🛑 KILL SWITCH FIRED — {kill_msg}")
+
+                                    if AUTO_DAILY_PROFIT_TARGET > 0 and new_daily_pnl >= AUTO_DAILY_PROFIT_TARGET:
+                                        with _auto_lock:
+                                            _auto_state["kill_switch"] = True
+                                            _auto_state["kill_reason"] = f"Daily profit target hit: ${new_daily_pnl:.2f} ≥ ${AUTO_DAILY_PROFIT_TARGET}"
+                                        kill_fired = True
+                                        kill_msg   = f"Profit target hit: ${new_daily_pnl:.2f}"
+                                        print(f"  🏆 PROFIT TARGET HIT — auto-trade paused")
+
+                                    # Remove from tracking
+                                    with _auto_lock:
+                                        _auto_state["open_orders"].pop(order_id, None)
+
+                                    # Send fill email (include kill switch alert if fired)
+                                    threading.Thread(
+                                        target=_send_fill_email,
+                                        args=(ticker, "sell", shares_n, fill_price,
+                                              entry_p, stop_p, target_p, order_id, reason,
+                                              trade_pnl, new_daily_pnl, kill_fired, kill_msg),
+                                        daemon=True
+                                    ).start()
+
+                        except Exception as inner_e:
+                            print(f"  Monitor check error {info['ticker']}: {inner_e}")
+
+        except Exception as e:
+            print(f"  Monitor loop error: {e}")
+
+        time.sleep(AUTO_MONITOR_INTERVAL)
+
+
+def _start_order_monitor():
+    """Launch the order monitor as a daemon thread."""
+    t = threading.Thread(target=_monitor_orders, daemon=True)
+    t.start()
+
+
+# ── Auto-trade status endpoint ────────────────────────────────────────────────
+@app.route("/api/auto-trade/status")
+def api_auto_trade_status():
+    with _auto_lock:
+        return jsonify({
+            "enabled":        AUTO_TRADE_ENABLED,
+            "trades_today":   _auto_state["trades_today"],
+            "max_per_day":    AUTO_MAX_TRADES_PER_DAY,
+            "executed":       list(_auto_state["executed"]),
+            "open_orders":    len(_auto_state["open_orders"]),
+            "require_vwap":   AUTO_REQUIRE_ABOVE_VWAP,
+            "min_score":      AUTO_MIN_SCORE,
+            "verdicts":       AUTO_VERDICTS,
+            "paper":          IS_PAPER,
+            "daily_pnl":      _auto_state["daily_pnl"],
+            "daily_trades":   _auto_state["daily_trades"],
+            "kill_switch":    _auto_state["kill_switch"],
+            "kill_reason":    _auto_state["kill_reason"],
+            "loss_limit":     AUTO_DAILY_LOSS_LIMIT,
+            "profit_target":  AUTO_DAILY_PROFIT_TARGET,
+        })
+
+
+@app.route("/api/auto-trade/reset-kill", methods=["POST"])
+def api_reset_kill_switch():
+    """Manually re-enable auto-trading after kill switch fired."""
+    with _auto_lock:
+        _auto_state["kill_switch"] = False
+        _auto_state["kill_reason"] = ""
+    print("  ✅ Kill switch reset manually via API")
+    return jsonify({"ok": True, "message": "Kill switch reset — auto-trading re-enabled"})
+
+
+@app.route("/api/pnl")
+def api_pnl():
+    """
+    Daily + weekly + monthly P&L from Alpaca portfolio history.
+    Also returns today's auto-trade log.
+    """
+    if not TRADING_OK:
+        return jsonify({"error": "trading not configured"}), 400
+    try:
+        tc = _tc()
+        account = tc.get_account()
+        equity     = float(account.equity or 0)
+        last_eq    = float(account.last_equity or equity)
+        day_pnl    = round(equity - last_eq, 2)
+        day_pnl_pct= round((day_pnl / last_eq * 100) if last_eq else 0, 2)
+
+        # Get portfolio history — 1 month daily bars
+        from alpaca.trading.requests import GetPortfolioHistoryRequest
+        hist_req = GetPortfolioHistoryRequest(period="1M", timeframe="1D", extended_hours=False)
+        hist = tc.get_portfolio_history(filter=hist_req)
+
+        history_points = []
+        if hist and hist.timestamp:
+            for i, ts in enumerate(hist.timestamp):
+                pl = hist.profit_loss[i] if hist.profit_loss else 0
+                eq = hist.equity[i]      if hist.equity      else 0
+                history_points.append({
+                    "date":   datetime.fromtimestamp(ts).strftime("%m/%d"),
+                    "pnl":    round(float(pl or 0), 2),
+                    "equity": round(float(eq or 0), 2),
+                })
+
+        with _auto_lock:
+            today_trades = list(_auto_state["daily_trades"])
+            today_pnl    = _auto_state["daily_pnl"]
+            kill_switch  = _auto_state["kill_switch"]
+
+        # Week/month rollup from history
+        week_pnl  = sum(p["pnl"] for p in history_points[-5:])  if history_points else 0
+        month_pnl = sum(p["pnl"] for p in history_points)        if history_points else 0
+
+        return jsonify({
+            "equity":        round(equity, 2),
+            "day_pnl":       day_pnl,
+            "day_pnl_pct":   day_pnl_pct,
+            "week_pnl":      round(week_pnl, 2),
+            "month_pnl":     round(month_pnl, 2),
+            "today_trades":  today_trades,
+            "today_auto_pnl":today_pnl,
+            "kill_switch":   kill_switch,
+            "loss_limit":    AUTO_DAILY_LOSS_LIMIT,
+            "profit_target": AUTO_DAILY_PROFIT_TARGET,
+            "history":       history_points[-30:],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/universe")
+def api_universe():
+    """Show current dynamic universe — useful for debugging."""
+    with _universe_lock:
+        tickers = list(_universe_cache["tickers"])
+        source  = _universe_cache["source"]
+        fetched = _universe_cache["fetched_at"].isoformat() if _universe_cache["fetched_at"] else None
+    return jsonify({
+        "count":      len(tickers),
+        "source":     source,
+        "fetched_at": fetched,
+        "tickers":    sorted(tickers),
+    })
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Shadow Log — paper-track every GO/WATCH setup, check outcome at +30min
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+import csv, json as _json
+
+SHADOW_LOG_PATH = os.path.join(os.path.dirname(__file__), "shadow_log.csv")
+SHADOW_LOG_COLS = [
+    "date", "scan_time", "ticker", "verdict", "priority", "score",
+    "entry_price", "stop", "target1", "target2",
+    "gap_pct", "rel_vol", "catalyst", "float_m", "short_float",
+    "above_vwap", "spread_pct",
+    "outcome_time", "outcome_price", "outcome_pct",
+    "hit_target1", "hit_target2", "hit_stop", "result",
+    "would_profit",
+]
+
+_shadow_pending = []   # list of dicts waiting for 30-min lookback
+_shadow_lock    = threading.Lock()
+
+
+def _ensure_shadow_log():
+    """Create CSV with header if it doesn't exist."""
+    if not os.path.exists(SHADOW_LOG_PATH):
+        with open(SHADOW_LOG_PATH, "w", newline="") as f:
+            csv.DictWriter(f, fieldnames=SHADOW_LOG_COLS).writeheader()
+
+
+def _append_shadow_rows(rows):
+    """Append completed rows to the CSV."""
+    _ensure_shadow_log()
+    with open(SHADOW_LOG_PATH, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=SHADOW_LOG_COLS, extrasaction="ignore")
+        for row in rows:
+            w.writerow(row)
+
+
+def _log_setups(results):
+    """Called at scan time — record every GO/WATCH setup for later evaluation."""
+    et = datetime.now(timezone(timedelta(hours=-5)))
+    try:
+        import pytz
+        et = datetime.now(pytz.timezone("America/New_York"))
+    except ImportError:
+        pass
+
+    logged = 0
+    for r in results:
+        if r.get("verdict") not in ("GO", "WATCH"):
+            continue
+        t = r.get("trade", {})
+        entry = {
+            "date":        et.strftime("%Y-%m-%d"),
+            "scan_time":   et.strftime("%H:%M"),
+            "ticker":      r["ticker"],
+            "verdict":     r.get("verdict"),
+            "priority":    r.get("score", {}).get("priority", "?"),
+            "score":       r.get("score", {}).get("total", 0),
+            "entry_price": r.get("price"),
+            "stop":        t.get("stop"),
+            "target1":     t.get("target1"),
+            "target2":     t.get("target2"),
+            "gap_pct":     r.get("gap"),
+            "rel_vol":     r.get("relVol") or r.get("score", {}).get("relVol"),
+            "catalyst":    r.get("catalyst"),
+            "float_m":     r.get("float"),
+            "short_float": r.get("shortFloat"),
+            "above_vwap":  r.get("aboveVwap"),
+            "spread_pct":  r.get("spreadPct"),
+            # outcome fields filled in later
+            "outcome_time":  None,
+            "outcome_price": None,
+            "outcome_pct":   None,
+            "hit_target1":   None,
+            "hit_target2":   None,
+            "hit_stop":      None,
+            "result":        None,
+            "would_profit":  None,
+            "_check_after":  et.timestamp() + 1800,   # 30 min from now
+        }
+        with _shadow_lock:
+            _shadow_pending.append(entry)
+        logged += 1
+
+    if logged:
+        print(f"  📓 Shadow log: queued {logged} setup(s) for 30-min lookback")
+
+
+def _resolve_pending():
+    """Check if any pending setups are due for outcome evaluation."""
+    now_ts = datetime.now(timezone(timedelta(hours=-5))).timestamp()
+
+    with _shadow_lock:
+        due   = [e for e in _shadow_pending if e["_check_after"] <= now_ts]
+        still = [e for e in _shadow_pending if e["_check_after"] >  now_ts]
+
+    if not due:
+        return
+
+    completed = []
+    for entry in due:
+        ticker = entry["ticker"]
+        try:
+            # Fetch current price via Alpaca snapshot
+            client = StockHistoricalDataClient(API_KEY, API_SECRET)
+            snap   = client.get_stock_snapshot(StockSnapshotRequest(symbol_or_symbols=[ticker]))
+            s      = snap.get(ticker)
+            if s and s.latest_trade:
+                outcome_price = float(s.latest_trade.price)
+            elif s and s.minute_bar:
+                outcome_price = float(s.minute_bar.close)
+            else:
+                outcome_price = None
+        except Exception as e:
+            print(f"  Shadow lookback error {ticker}: {e}")
+            outcome_price = None
+
+        entry_price = entry.get("entry_price") or 0
+        stop        = entry.get("stop")
+        target1     = entry.get("target1")
+        target2     = entry.get("target2")
+
+        if outcome_price and entry_price:
+            outcome_pct = round((outcome_price - entry_price) / entry_price * 100, 2)
+            hit_t1  = target1 and outcome_price >= float(target1)
+            hit_t2  = target2 and outcome_price >= float(target2)
+            hit_stp = stop    and outcome_price <= float(stop)
+
+            if hit_t2:      result = "TARGET2"
+            elif hit_t1:    result = "TARGET1"
+            elif hit_stp:   result = "STOPPED"
+            elif outcome_pct > 0: result = "POSITIVE"
+            else:           result = "NEGATIVE"
+
+            # Simplified P&L: 1 unit risk, target = 2:1
+            if result in ("TARGET1", "TARGET2"):
+                would_profit = round(abs(entry_price - float(stop)) * (2 if hit_t2 else 1), 2) if stop else None
+            elif result == "STOPPED":
+                would_profit = -round(abs(entry_price - float(stop)), 2) if stop else None
+            else:
+                would_profit = round(outcome_price - entry_price, 2)
+        else:
+            outcome_pct  = None
+            hit_t1 = hit_t2 = hit_stp = None
+            result = "NO_DATA"
+            would_profit = None
+
+        et = datetime.now(timezone(timedelta(hours=-5)))
+        entry.update({
+            "outcome_time":  et.strftime("%H:%M"),
+            "outcome_price": outcome_price,
+            "outcome_pct":   outcome_pct,
+            "hit_target1":   hit_t1,
+            "hit_target2":   hit_t2,
+            "hit_stop":      hit_stp,
+            "result":        result,
+            "would_profit":  would_profit,
+        })
+        completed.append(entry)
+        print(f"  📓 Shadow result: {ticker} entry ${entry_price} → ${outcome_price} ({outcome_pct:+.2f}%) [{result}]")
+
+    # Save completed rows
+    _append_shadow_rows(completed)
+
+    # Update pending list
+    with _shadow_lock:
+        _shadow_pending.clear()
+        _shadow_pending.extend(still)
+
+
+def _load_shadow_log():
+    """Load all rows from CSV as list of dicts."""
+    _ensure_shadow_log()
+    try:
+        with open(SHADOW_LOG_PATH, "r", newline="") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+
+def _shadow_stats(rows):
+    """Compute win rate, avg gain, expectancy from completed rows."""
+    done = [r for r in rows if r.get("result") and r["result"] != "NO_DATA"]
+    if not done:
+        return {"total": 0}
+
+    wins    = [r for r in done if r["result"] in ("TARGET1", "TARGET2", "POSITIVE")]
+    losses  = [r for r in done if r["result"] in ("STOPPED", "NEGATIVE")]
+    profits = []
+    for r in done:
+        try:
+            profits.append(float(r["would_profit"]) if r["would_profit"] else 0)
+        except (ValueError, TypeError):
+            pass
+
+    by_verdict  = {}
+    by_priority = {}
+    for r in done:
+        v = r.get("verdict", "?")
+        p = r.get("priority", "?")
+        by_verdict[v]  = by_verdict.get(v, {"w":0,"l":0})
+        by_priority[p] = by_priority.get(p, {"w":0,"l":0})
+        key = "w" if r["result"] in ("TARGET1","TARGET2","POSITIVE") else "l"
+        by_verdict[v][key]  += 1
+        by_priority[p][key] += 1
+
+    avg_profit   = round(sum(profits) / len(profits), 3) if profits else 0
+    total_profit = round(sum(profits), 2)
+    win_rate     = round(len(wins) / len(done) * 100, 1) if done else 0
+
+    return {
+        "total":        len(done),
+        "wins":         len(wins),
+        "losses":       len(losses),
+        "win_rate_pct": win_rate,
+        "avg_profit":   avg_profit,
+        "total_profit": total_profit,
+        "by_verdict":   by_verdict,
+        "by_priority":  by_priority,
+        "pending":      len(_shadow_pending),
+    }
+
+
+# ── Shadow log API endpoints ──────────────────────────────────────────────────
+
+@app.route("/api/shadow-log")
+def api_shadow_log():
+    """Return all shadow log rows + stats summary."""
+    rows  = _load_shadow_log()
+    stats = _shadow_stats(rows)
+    # Most recent 200 rows for UI
+    recent = rows[-200:] if len(rows) > 200 else rows
+    recent.reverse()
+    return jsonify({"rows": recent, "stats": stats, "pending": len(_shadow_pending)})
+
+
+@app.route("/api/shadow-log/clear", methods=["POST"])
+def api_shadow_log_clear():
+    """Wipe the shadow log (use carefully)."""
+    try:
+        _ensure_shadow_log()
+        with open(SHADOW_LOG_PATH, "w", newline="") as f:
+            csv.DictWriter(f, fieldnames=SHADOW_LOG_COLS).writeheader()
+        with _shadow_lock:
+            _shadow_pending.clear()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
 if __name__ == "__main__":
     print("\n" + "═"*52)
     print("  GAP SCANNER — Alpaca + yfinance")
@@ -1252,8 +2551,15 @@ if __name__ == "__main__":
     else:
         print(f"  yfinance:  ❌  pip install yfinance")
     print(f"  API Keys:  {'✅' if API_KEY and API_SECRET  else '❌  check config.py'}")
-    print(f"  Universe:  {len(WATCHLIST)} tickers")
+    print(f"  Universe:  dynamic (top gainers + most active + {len(WATCHLIST_FALLBACK)} watchlist)")
+    print(f"  Email:     {'✅ ' + EMAIL_TO if EMAIL_ENABLED else '❌  disabled (set EMAIL_ENABLED=True in config.py)'}")
+    print(f"  Scheduler: {'✅ every ' + str(SCAN_INTERVAL_MIN) + 'min  ' + SCAN_WINDOW_START + '–' + SCAN_WINDOW_END + ' ET' if SCHEDULER_ENABLED else '❌  disabled (set SCHEDULER_ENABLED=True in config.py)'}")
+    print(f"  Auto-trade:{'✅ GO+VWAP  max ' + str(AUTO_MAX_TRADES_PER_DAY) + '/day  PAPER' if AUTO_TRADE_ENABLED and IS_PAPER else ('⚠  LIVE — be careful!' if AUTO_TRADE_ENABLED and not IS_PAPER else '❌  disabled (set AUTO_TRADE_ENABLED=True)')}")
     print(f"  Server:    http://localhost:5001")
     print(f"  Debug:     http://localhost:5001/api/diagnostic")
     print("═"*52 + "\n")
+    if SCHEDULER_ENABLED:
+        _start_scheduler()
+    if AUTO_TRADE_ENABLED and TRADING_OK:
+        _start_order_monitor()
     app.run(host="0.0.0.0", port=5001, debug=False)

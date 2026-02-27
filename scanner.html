@@ -166,7 +166,7 @@
 
   /* DETAIL PANEL */
   /* ── Detail panel ── */
-  .detail-panel { border-top: 2px solid var(--border); background: var(--panel); padding: 0; display: none; flex-shrink: 0; animation: slideUp .2s ease; max-height: 260px; overflow: hidden; }
+  .detail-panel { border-top: 2px solid var(--border); background: var(--panel); padding: 0; display: none; flex-shrink: 0; animation: slideUp .2s ease; max-height: 420px; overflow: hidden; }
   .detail-panel.visible { display: flex; flex-direction: column; }
   @keyframes slideUp { from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1} }
 
@@ -177,8 +177,8 @@
   .dp-spread { font-size:10px; letter-spacing:1px; margin-left:auto; }
   .dp-spread.tight { color:var(--green); } .dp-spread.wide { color:var(--yellow); } .dp-spread.very-wide { color:var(--red); }
 
-  .dp-body { display: grid; grid-template-columns: 200px 1fr 1fr 1fr; gap: 0; flex: 1; }
-  .dp-col { padding: 12px 16px; border-right: 1px solid var(--border); }
+  .dp-body { display: grid; grid-template-columns: 200px 1fr 1fr 1fr 280px; gap: 0; flex: 1; overflow: hidden; }
+  .dp-col { padding: 12px 16px; border-right: 1px solid var(--border); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
   .dp-col:last-child { border-right: none; }
   .dp-col-label { font-size: 9px; letter-spacing: 2px; color: var(--text-dim); margin-bottom: 8px; text-transform: uppercase; }
 
@@ -547,12 +547,25 @@
     <div class="divider"></div>
 
     <button class="scan-btn" id="scanBtn" onclick="runScan()">▶ RUN SCAN</button>
+    <button onclick="testEmail()" id="emailBtn" style="margin-top:8px;width:100%;padding:8px;background:transparent;border:1px solid var(--border);color:var(--text-dim);font-family:'Bebas Neue',sans-serif;letter-spacing:2px;font-size:13px;cursor:pointer;border-radius:3px" title="Send test email with current results">📧 TEST EMAIL</button>
+    <button onclick="showShadowLog()" id="shadowBtn" style="margin-top:6px;width:100%;padding:8px;background:transparent;border:1px solid var(--border);color:var(--text-dim);font-family:'Bebas Neue',sans-serif;letter-spacing:2px;font-size:13px;cursor:pointer;border-radius:3px" title="View shadow log stats">📓 SHADOW LOG</button>
+    <button onclick="showPnlDashboard()" id="pnlBtn" style="margin-top:4px;width:100%;padding:8px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);color:var(--green);font-family:'Bebas Neue',sans-serif;letter-spacing:2px;font-size:13px;cursor:pointer;border-radius:3px" title="P&L Dashboard">💰 P&amp;L DASHBOARD</button>
+
+    <div class="divider"></div>
+
+    <!-- Auto-trade status -->
+    <div id="autoTradePanel" style="font-size:11px;color:var(--text-dim)">
+      <div style="font-family:'Bebas Neue',sans-serif;letter-spacing:2px;font-size:13px;color:var(--text);margin-bottom:6px">AUTO-TRADE</div>
+      <div id="autoTradeStatus" style="color:var(--text-dim)">Loading...</div>
+    </div>
 
     <div class="divider"></div>
 
     <div class="finviz-note">
-      <span style="color:var(--text)">Data Source:</span> Alpaca Markets API<br>
-      Backup: <a href="https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,ta_gap_u3,sh_price_u200" target="_blank">Finviz Screener ↗</a><br><br>
+      <span style="color:var(--text)">Data Source:</span> Alpaca Screener + yfinance<br>
+      Backup: <a href="https://finviz.com/screener.ashx?v=111&f=sh_avgvol_o500,ta_gap_u3,sh_price_u200" target="_blank">Finviz Screener ↗</a><br>
+      <a href="/api/universe" target="_blank" style="color:var(--text-dim);font-size:10px">View universe ↗</a><br><br>
+      <span id="universeInfo" style="color:var(--cyan);font-size:10px"></span><br>
       <span id="lastUpdated" style="color:var(--text-dim)">Not yet scanned</span>
     </div>
   </div>
@@ -565,10 +578,11 @@
       </div>
       <div class="sort-controls">
         <button class="sort-btn active" onclick="sortBy('priority')" id="sort-priority">RANK</button>
-        <button class="sort-btn" onclick="sortBy('gap')"    id="sort-gap">GAP %</button>
-        <button class="sort-btn" onclick="sortBy('volume')" id="sort-volume">VOLUME</button>
-        <button class="sort-btn" onclick="sortBy('score')"  id="sort-score">SCORE</button>
-        <button class="sort-btn" onclick="sortBy('price')"  id="sort-price">PRICE</button>
+        <button class="sort-btn" onclick="sortBy('gap')"        id="sort-gap">GAP %</button>
+        <button class="sort-btn" onclick="sortBy('volume')"     id="sort-volume">VOLUME</button>
+        <button class="sort-btn" onclick="sortBy('score')"      id="sort-score">SCORE</button>
+        <button class="sort-btn" onclick="sortBy('price')"      id="sort-price">PRICE</button>
+        <button class="sort-btn" onclick="sortBy('shortFloat')" id="sort-shortFloat">SHORT %</button>
       </div>
     </div>
 
@@ -593,6 +607,7 @@
             <th>SHARES / EXPOSURE</th>
             <th>STOP</th>
             <th>TARGET +1%</th>
+            <th style="white-space:nowrap">FLOAT / SHORT</th>
             <th>FINVIZ</th>
             <th>TRADE</th>
           </tr>
@@ -634,6 +649,11 @@
         <div class="dp-col">
           <div class="dp-col-label">RSI (14)</div>
           <div id="d-rsi"><div class="tech-na">—</div></div>
+        </div>
+        <!-- Col 5: News -->
+        <div class="dp-col" id="d-news-col">
+          <div class="dp-col-label">Latest News</div>
+          <div id="d-news-feed"><div class="tech-na">—</div></div>
         </div>
       </div>
     </div>
@@ -714,6 +734,40 @@ function closeSetup() {
   checkConnection();
 }
 
+// ── Email Test ─────────────────────────────────────────────────────────────
+async function testEmail() {
+  const btn = document.getElementById('emailBtn');
+  btn.textContent = '📧 SENDING...';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/test-email', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      btn.textContent = '✅ SENT!';
+      btn.style.color = 'var(--green)';
+      btn.style.borderColor = 'var(--green)';
+      setTimeout(() => {
+        btn.textContent = '📧 TEST EMAIL';
+        btn.style.color = '';
+        btn.style.borderColor = '';
+        btn.disabled = false;
+      }, 3000);
+    } else {
+      btn.textContent = '❌ ' + (d.error || 'Failed').slice(0, 30);
+      btn.style.color = 'var(--red)';
+      setTimeout(() => {
+        btn.textContent = '📧 TEST EMAIL';
+        btn.style.color = '';
+        btn.disabled = false;
+      }, 4000);
+    }
+  } catch (e) {
+    btn.textContent = '❌ ERROR';
+    btn.style.color = 'var(--red)';
+    setTimeout(() => { btn.textContent = '📧 TEST EMAIL'; btn.style.color=''; btn.disabled=false; }, 3000);
+  }
+}
+
 // ── Scan ──────────────────────────────────────────────────────────────────
 async function runScan() {
   if (!backendLive) {
@@ -752,7 +806,7 @@ async function runScan() {
         btn.classList.remove('loading');
         btn.textContent = '▶ RUN SCAN';
         if (data.status === 'done') {
-          processResults(data.results, data.last_updated);
+          processResults(data.results, data.last_updated, data.meta);
         } else {
           showAlert('❌ Scan error — check terminal', 'red');
         }
@@ -766,7 +820,7 @@ async function runScan() {
   }
 }
 
-function processResults(results, lastUpdated) {
+function processResults(results, lastUpdated, meta) {
   currentData = results;
   window._lastResults = results;  // trading engine needs this
   document.getElementById('resultCount').textContent = results.length;
@@ -775,6 +829,12 @@ function processResults(results, lastUpdated) {
     const d = new Date(lastUpdated);
     document.getElementById('lastUpdated').textContent =
       'Updated: ' + d.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' CT';
+  }
+
+  // Show universe source
+  if (meta && meta.universe_size) {
+    const uEl = document.getElementById('universeInfo');
+    if (uEl) uEl.textContent = `🌐 ${meta.universe_size} tickers scanned`;
   }
 
   sortData();
@@ -808,6 +868,7 @@ function sortData() {
     if (sortCol === 'volume')   return sortDir * (b.pmVol - a.pmVol);
     if (sortCol === 'score')    return sortDir * (b.score.total - a.score.total);
     if (sortCol === 'price')    return sortDir * (b.price - a.price);
+    if (sortCol === 'shortFloat') return sortDir * ((b.shortFloat||0) - (a.shortFloat||0));
     return 0;
   });
 }
@@ -857,6 +918,10 @@ function renderTable() {
       <td style="color:${posColor}">${trade.shares||'—'} <span style="font-size:10px">(${posPct.toFixed(0)}% acct${posWarn})</span></td>
       <td style="color:var(--red)">${trade.stop ? '$'+trade.stop : '—'}</td>
       <td style="color:var(--green)">${trade.target1 ? '$'+trade.target1 : '—'}</td>
+      <td style="font-size:11px;white-space:nowrap">
+        <span style="color:var(--text-dim)">${d.float ? d.float+'M' : '—'}</span>
+        ${d.shortFloat ? `<br><span style="color:${d.shortFloat>20?'var(--yellow)':'var(--text-dim)'}">${d.shortFloat}% short</span>` : ''}
+      </td>
       <td><a class="finviz-link" href="https://finviz.com/quote.ashx?t=${d.ticker}" target="_blank">CHART ↗</a></td>
       <td><button class="buy-btn" onclick="event.stopPropagation();openModal(${i},'buy')">BUY</button></td>
     </tr>`;
@@ -877,23 +942,51 @@ function renderCatalystSource(d) {
   const srcColors = {
     sec_8k:            'var(--green)',
     yfinance_calendar: 'var(--cyan)',
+    yfinance_news:     'var(--cyan)',
     heuristic:         'var(--yellow)',
     default:           'var(--text-dim)',
   };
   const srcLabels = {
     sec_8k:            '🔴 SEC 8-K Filing',
     yfinance_calendar: '📅 Earnings Calendar',
+    yfinance_news:     '📰 Latest News',
     heuristic:         '⚡ Sector Heuristic',
     default:           '— No Data',
   };
   const src   = d.catSource || 'default';
   const color = srcColors[src] || 'var(--text-dim)';
   const label = srcLabels[src]  || src;
-  const detail = d.catDetail ? `<div style="font-size:9px;color:var(--text-dim);margin-top:2px;word-break:break-word">${d.catDetail}</div>` : '';
+  const detail = d.catDetail ? `<div style="font-size:11px;color:var(--text-dim);margin-top:2px;word-break:break-word">${d.catDetail}</div>` : '';
   const filing = d.secFiling
     ? `<div style="margin-top:3px"><a href="${d.secFiling.url}" target="_blank" style="font-size:9px;color:var(--cyan);text-decoration:none">SEC 8-K ↗ ${d.secFiling.filed_at ? new Date(d.secFiling.filed_at).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}) : ''}</a></div>`
     : '';
   return `<div style="font-size:10px;color:${color};letter-spacing:0.5px">${label}</div>${detail}${filing}`;
+}
+
+// ── News Feed renderer ────────────────────────────────────────────────────────
+function renderNewsFeed(d, standalone) {
+  const items = d.yfNews || [];
+  if (!items.length) return '<div style="font-size:11px;color:var(--text-dim)">No news available</div>';
+
+  const rows = items.map((n, i) => {
+    const ageStr = n.age_min != null
+      ? (n.age_min < 60 ? `${n.age_min}m ago` : `${Math.round(n.age_min/60)}h ago`)
+      : '';
+    const pub      = n.publisher ? `<span style="color:#556677">${n.publisher}</span>` : '';
+    const age      = ageStr ? `<span style="color:#556677;margin-left:6px">${ageStr}</span>` : '';
+    const color    = i === 0 ? '#e8eaf0' : '#7a8a99';
+    const href     = n.url || `https://finance.yahoo.com/quote/${d.ticker}/news/`;
+    const summary  = (i === 0 && n.summary)
+      ? `<div style="font-size:10px;color:#667788;margin-top:4px;line-height:1.5">${n.summary}</div>` : '';
+    return `<div style="padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.06)">
+      <a href="${href}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:${color};font-size:${i===0?'12':'11'}px;line-height:1.45;text-decoration:underline;text-underline-offset:2px;text-decoration-color:rgba(255,255,255,0.25);cursor:pointer;position:relative;z-index:100">${n.title} ↗</a>
+      ${summary}
+      <div style="font-size:10px;margin-top:3px">${pub}${age}</div>
+    </div>`;
+  }).join('');
+
+  if (standalone) return rows;
+  return `<div style="margin-top:6px">${rows}</div>`;
 }
 
 // ── Detail Panel ──────────────────────────────────────────────────────────
@@ -954,12 +1047,17 @@ function selectRow(idx) {
       ${d.pmHigh  ? `<div style="font-size:10px;color:var(--yellow)">PM High &nbsp;<b>$${d.pmHigh}</b>${d.price >= d.pmHigh ? ' <span style="color:var(--green)">✓ ABOVE</span>' : ' <span style="color:var(--text-dim)">below</span>'}</div>` : ''}
       ${d.dayOpen ? `<div style="font-size:10px;color:var(--text-dim)">Day Open &nbsp;<b style="color:var(--cyan)">$${d.dayOpen}</b></div>` : ''}
       ${d.shortFloat ? `<div style="font-size:10px;color:var(--text-dim)">Short Float &nbsp;<b style="color:${d.shortFloat > 20 ? 'var(--yellow)' : 'var(--text-dim)'}">${d.shortFloat}%</b>${d.shortFloat > 20 ? ' ⚡ squeeze risk' : ''}</div>` : ''}
+      ${d.sharesOutM  ? `<div style="font-size:10px;color:var(--text-dim)">Shares Out &nbsp;<b style="color:var(--text-dim)">${d.sharesOutM}M</b></div>` : ''}
+      ${d.sharesShortM ? `<div style="font-size:10px;color:var(--text-dim)">Short Shares &nbsp;<b style="color:${d.shortFloat > 20 ? 'var(--yellow)' : 'var(--text-dim)'}">${d.sharesShortM}M</b>${d.shortRatio ? ` <span style="color:var(--text-dim)">(${d.shortRatio}d cover)</span>` : ''}</div>` : ''}
     </div>
     <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">
-      <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-bottom:3px">CATALYST SOURCE</div>
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-bottom:4px">CATALYST SOURCE</div>
       ${renderCatalystSource(d)}
     </div>
   `;
+
+  // ── News column ──
+  document.getElementById('d-news-feed').innerHTML = renderNewsFeed(d, true);
 
   // ── Trade sizing ──
   const posSize  = (trade.shares||0) * d.price;
@@ -1120,6 +1218,30 @@ async function lookupTicker() {
     const fmtCap = v => !v ? '—' : v >= 1e12 ? (v/1e12).toFixed(1)+'T' : v >= 1e9 ? (v/1e9).toFixed(1)+'B' : v >= 1e6 ? (v/1e6).toFixed(0)+'M' : v.toFixed(0);
     const fmtFloat = v => !v ? '—' : v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v.toFixed(0);
 
+    // ── Spread badge (pre-computed to avoid nested backtick syntax error) ──
+    let spreadBadgeHtml = '';
+    {
+      const bid = data.bid || 0, ask = data.ask || 0, mid = (bid + ask) / 2;
+      if (bid && ask && mid > 0) {
+        const spreadPct = ((ask - bid) / mid) * 100;
+        const spreadAmt = (ask - bid).toFixed(2);
+        let bgColor, textColor, icon, label;
+        if      (spreadPct < 0.1) { bgColor='rgba(63,185,80,0.12)';  textColor='var(--green)';  icon='✓'; label='TIGHT'; }
+        else if (spreadPct < 0.5) { bgColor='rgba(255,189,46,0.12)'; textColor='var(--yellow)'; icon='⚠'; label='WIDE'; }
+        else if (spreadPct < 2.0) { bgColor='rgba(248,81,73,0.12)';  textColor='#f85149';       icon='✗'; label='VERY WIDE'; }
+        else                      { bgColor='rgba(248,81,73,0.25)';  textColor='#f85149';       icon='🚫'; label='DANGER — DO NOT TRADE'; }
+        const tradeNote = spreadPct >= 2.0
+          ? '<div style="font-size:10px;color:#f85149;margin-top:3px">Spread eats ' + spreadPct.toFixed(1) + '% on entry — pre-market illiquidity</div>'
+          : '';
+        spreadBadgeHtml = '<div style="background:' + bgColor + ';border:1px solid ' + textColor + '44;border-radius:4px;padding:7px 10px;margin:8px 0;display:flex;align-items:center;justify-content:space-between">'
+          + '<div><span style="color:' + textColor + ';font-weight:bold;font-size:11px;letter-spacing:1px">' + icon + ' SPREAD ' + label + '</span>' + tradeNote + '</div>'
+          + '<div style="text-align:right">'
+          + '<div style="color:' + textColor + ';font-size:13px;font-weight:bold">' + spreadPct.toFixed(2) + '%</div>'
+          + '<div style="color:var(--text-dim);font-size:10px">$' + spreadAmt + '</div>'
+          + '</div></div>';
+      }
+    }
+
     qqEl.innerHTML = `
       <!-- Header -->
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
@@ -1148,6 +1270,8 @@ async function lookupTicker() {
         <div class="qq-tech-row"><span class="qq-tech-label">52W High</span><span class="qq-tech-val">${data['52w_high'] ? '$'+data['52w_high'].toFixed(2) : '—'}</span></div>
         <div class="qq-tech-row"><span class="qq-tech-label">52W Low</span><span class="qq-tech-val">${data['52w_low'] ? '$'+data['52w_low'].toFixed(2) : '—'}</span></div>
       </div>
+
+      ${spreadBadgeHtml}
 
       <!-- VWAP -->
       ${data.day_vwap ? `<div class="qq-section-hdr">VWAP</div><div class="qq-tech-grid">${vwapHtml}</div>` : ''}
@@ -1698,6 +1822,383 @@ setInterval(() => { if (document.visibilityState === 'visible') refreshPositions
     </div>
   </div>
 </div>
+
+<!-- Shadow Log Modal -->
+<div id="shadowModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9000;overflow:auto">
+  <div style="max-width:900px;margin:40px auto;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:24px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <span style="font-family:'Bebas Neue',sans-serif;font-size:22px;letter-spacing:3px;color:var(--cyan)">📓 SHADOW LOG</span>
+      <div style="display:flex;gap:8px">
+        <button onclick="exportShadowCSV()" style="padding:6px 12px;background:transparent;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:3px;font-size:12px">⬇ EXPORT CSV</button>
+        <button onclick="document.getElementById('shadowModal').style.display='none'" style="padding:6px 12px;background:transparent;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:3px;font-size:12px">✕ CLOSE</button>
+      </div>
+    </div>
+
+    <!-- Stats summary -->
+    <div id="shadowStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:20px"></div>
+
+    <!-- By verdict/priority breakdown -->
+    <div id="shadowBreakdown" style="margin-bottom:20px;font-size:12px;color:var(--text-dim)"></div>
+
+    <!-- Pending -->
+    <div id="shadowPending" style="font-size:11px;color:var(--yellow);margin-bottom:12px"></div>
+
+    <!-- Rows table -->
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead>
+          <tr style="color:var(--text-dim);border-bottom:1px solid var(--border)">
+            <th style="padding:6px 8px;text-align:left">DATE</th>
+            <th style="padding:6px 8px;text-align:left">TIME</th>
+            <th style="padding:6px 8px;text-align:left">TICKER</th>
+            <th style="padding:6px 4px;text-align:center">VER</th>
+            <th style="padding:6px 4px;text-align:center">RANK</th>
+            <th style="padding:6px 4px;text-align:right">SCORE</th>
+            <th style="padding:6px 4px;text-align:right">GAP%</th>
+            <th style="padding:6px 4px;text-align:right">ENTRY</th>
+            <th style="padding:6px 4px;text-align:right">+30m</th>
+            <th style="padding:6px 4px;text-align:right">CHG%</th>
+            <th style="padding:6px 8px;text-align:center">RESULT</th>
+            <th style="padding:6px 4px;text-align:right">WOULD$</th>
+          </tr>
+        </thead>
+        <tbody id="shadowRows"></tbody>
+      </table>
+    </div>
+    <div id="shadowEmpty" style="text-align:center;color:var(--text-dim);padding:32px;display:none">
+      No shadow log data yet — setups will appear here after the scheduler runs during market hours.
+    </div>
+  </div>
+</div>
+
+<!-- P&L Dashboard Modal -->
+<div id="pnlModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9000;overflow:auto">
+  <div style="max-width:780px;margin:40px auto;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:24px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <span style="font-family:'Bebas Neue',sans-serif;font-size:22px;letter-spacing:3px;color:var(--green)">💰 P&amp;L DASHBOARD</span>
+      <button onclick="document.getElementById('pnlModal').style.display='none'" style="padding:6px 12px;background:transparent;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:3px;font-size:12px">✕ CLOSE</button>
+    </div>
+
+    <!-- Summary tiles -->
+    <div id="pnlSummary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:20px">
+      <div style="color:var(--text-dim);font-size:12px">Loading...</div>
+    </div>
+
+    <!-- Kill switch alert -->
+    <div id="pnlKillAlert" style="display:none;margin-bottom:16px"></div>
+
+    <!-- Today's trades -->
+    <div style="font-family:'Bebas Neue',sans-serif;letter-spacing:2px;font-size:13px;color:var(--text-dim);margin-bottom:8px">TODAY'S AUTO TRADES</div>
+    <div id="pnlTodayTrades" style="margin-bottom:20px;font-size:12px">
+      <div style="color:var(--text-dim)">No trades yet today.</div>
+    </div>
+
+    <!-- Equity curve (30-day) -->
+    <div style="font-family:'Bebas Neue',sans-serif;letter-spacing:2px;font-size:13px;color:var(--text-dim);margin-bottom:8px">30-DAY DAILY P&amp;L</div>
+    <div id="pnlChart" style="height:120px;position:relative;background:rgba(0,0,0,0.2);border-radius:4px;overflow:hidden;margin-bottom:16px">
+      <canvas id="pnlCanvas" style="width:100%;height:100%"></canvas>
+    </div>
+
+    <!-- History table -->
+    <div id="pnlHistory" style="font-size:11px;max-height:200px;overflow-y:auto"></div>
+  </div>
+</div>
+<script>
+async function showShadowLog() {
+  document.getElementById('shadowModal').style.display = 'block';
+  await refreshShadowLog();
+}
+
+async function refreshShadowLog() {
+  try {
+    const r = await fetch('/api/shadow-log');
+    const d = await r.json();
+    renderShadowStats(d.stats);
+    renderShadowRows(d.rows);
+    const pend = document.getElementById('shadowPending');
+    pend.textContent = d.pending > 0 ? `⏳ ${d.pending} setup(s) awaiting 30-min lookback` : '';
+  } catch(e) {
+    console.error('Shadow log error', e);
+  }
+}
+
+function renderShadowStats(s) {
+  const el = document.getElementById('shadowStats');
+  if (!s || s.total === 0) {
+    el.innerHTML = '<div style="color:var(--text-dim);font-size:12px">No completed setups yet.</div>';
+    return;
+  }
+  const tiles = [
+    { label:'SETUPS',    val: s.total },
+    { label:'WIN RATE',  val: s.win_rate_pct + '%',  color: s.win_rate_pct >= 50 ? 'var(--green)' : 'var(--red)' },
+    { label:'WINS',      val: s.wins,  color:'var(--green)' },
+    { label:'LOSSES',    val: s.losses, color:'var(--red)' },
+    { label:'AVG WOULD$', val: (s.avg_profit >= 0 ? '+' : '') + s.avg_profit.toFixed(2), color: s.avg_profit >= 0 ? 'var(--green)' : 'var(--red)' },
+    { label:'TOTAL WOULD$', val: (s.total_profit >= 0 ? '+' : '') + s.total_profit.toFixed(2), color: s.total_profit >= 0 ? 'var(--green)' : 'var(--red)' },
+  ];
+  el.innerHTML = tiles.map(t => `
+    <div style="background:var(--bg-deep);border:1px solid var(--border);border-radius:4px;padding:10px;text-align:center">
+      <div style="font-size:10px;color:var(--text-dim);letter-spacing:1px">${t.label}</div>
+      <div style="font-size:20px;font-family:'Bebas Neue',sans-serif;color:${t.color||'var(--text)'};margin-top:2px">${t.val}</div>
+    </div>`).join('');
+
+  // Breakdown by verdict + priority
+  const bd = document.getElementById('shadowBreakdown');
+  let html = '<div style="display:flex;gap:24px;flex-wrap:wrap">';
+  if (s.by_verdict) {
+    html += '<div><b style="color:var(--text)">By Verdict</b><br>';
+    for (const [v, c] of Object.entries(s.by_verdict)) {
+      const total = c.w + c.l;
+      const wr    = total ? Math.round(c.w/total*100) : 0;
+      html += `<span style="margin-right:12px">${v}: ${c.w}W ${c.l}L (${wr}%)</span>`;
+    }
+    html += '</div>';
+  }
+  if (s.by_priority) {
+    html += '<div><b style="color:var(--text)">By Priority</b><br>';
+    for (const [p, c] of Object.entries(s.by_priority).sort()) {
+      const total = c.w + c.l;
+      const wr    = total ? Math.round(c.w/total*100) : 0;
+      html += `<span style="margin-right:12px">${p}: ${c.w}W ${c.l}L (${wr}%)</span>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  bd.innerHTML = html;
+}
+
+function renderShadowRows(rows) {
+  const tbody = document.getElementById('shadowRows');
+  const empty = document.getElementById('shadowEmpty');
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  const resultColor = {
+    'TARGET2': 'var(--green)', 'TARGET1': 'var(--green)',
+    'POSITIVE': '#66bb6a',
+    'STOPPED': 'var(--red)', 'NEGATIVE': '#ef5350',
+    'NO_DATA': 'var(--text-dim)',
+  };
+  const verdictColor = { 'GO': 'var(--green)', 'WATCH': 'var(--yellow)', 'SKIP': 'var(--red)' };
+
+  tbody.innerHTML = rows.map(r => {
+    const chgPct = parseFloat(r.outcome_pct);
+    const chgCol = isNaN(chgPct) ? 'var(--text-dim)' : chgPct >= 0 ? 'var(--green)' : 'var(--red)';
+    const wp     = parseFloat(r.would_profit);
+    const wpCol  = isNaN(wp) ? 'var(--text-dim)' : wp >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<tr style="border-bottom:1px solid #1a1a2e">
+      <td style="padding:5px 8px;color:var(--text-dim)">${r.date||''}</td>
+      <td style="padding:5px 8px;color:var(--text-dim)">${r.scan_time||''}</td>
+      <td style="padding:5px 8px;color:var(--cyan);font-weight:bold">${r.ticker}</td>
+      <td style="padding:5px 4px;text-align:center;color:${verdictColor[r.verdict]||'var(--text)'}">${r.verdict||'—'}</td>
+      <td style="padding:5px 4px;text-align:center">${r.priority||'—'}</td>
+      <td style="padding:5px 4px;text-align:right">${r.score||'—'}</td>
+      <td style="padding:5px 4px;text-align:right">${r.gap_pct ? parseFloat(r.gap_pct).toFixed(1)+'%' : '—'}</td>
+      <td style="padding:5px 4px;text-align:right">${r.entry_price ? '$'+parseFloat(r.entry_price).toFixed(2) : '—'}</td>
+      <td style="padding:5px 4px;text-align:right">${r.outcome_price ? '$'+parseFloat(r.outcome_price).toFixed(2) : '⏳'}</td>
+      <td style="padding:5px 4px;text-align:right;color:${chgCol}">${isNaN(chgPct) ? '—' : (chgPct>=0?'+':'')+chgPct.toFixed(2)+'%'}</td>
+      <td style="padding:5px 8px;text-align:center;color:${resultColor[r.result]||'var(--text-dim)'};font-size:10px;font-weight:bold">${r.result||'⏳'}</td>
+      <td style="padding:5px 4px;text-align:right;color:${wpCol}">${isNaN(wp) ? '—' : (wp>=0?'+':'')+'$'+Math.abs(wp).toFixed(2)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function exportShadowCSV() {
+  window.open('/api/shadow-log', '_blank');
+}
+
+// ── Auto-trade status ─────────────────────────────────────────────────────────
+async function refreshAutoTradeStatus() {
+  try {
+    const r = await fetch('/api/auto-trade/status');
+    const d = await r.json();
+    const el = document.getElementById('autoTradeStatus');
+    if (!el) return;
+    if (!d.enabled) {
+      el.innerHTML = '<span style="color:var(--red)">● DISABLED</span><br><span style="font-size:10px">Set AUTO_TRADE_ENABLED=True in config.py</span>';
+      return;
+    }
+
+    // Kill switch banner
+    const killHtml = d.kill_switch ? `
+      <div style="background:rgba(248,81,73,0.15);border:1px solid rgba(248,81,73,0.4);border-radius:3px;padding:5px 7px;margin:4px 0">
+        <div style="color:#f85149;font-weight:bold;font-size:10px">🛑 KILL SWITCH ACTIVE</div>
+        <div style="color:#f85149;font-size:9px;margin-top:1px">${d.kill_reason}</div>
+        <button onclick="resetKillSwitch()" style="margin-top:4px;padding:3px 8px;background:rgba(248,81,73,0.2);border:1px solid #f85149;color:#f85149;font-size:9px;cursor:pointer;border-radius:2px;font-family:'Bebas Neue',sans-serif;letter-spacing:1px">RESET & RE-ENABLE</button>
+      </div>` : '';
+
+    // Daily P&L
+    const pnl = d.daily_pnl || 0;
+    const pnlColor = pnl >= 0 ? 'var(--green)' : '#f85149';
+    const pnlHtml = `<div style="margin-top:4px">Day P&L: <b style="color:${pnlColor}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</b>
+      ${d.profit_target > 0 ? `<span style="color:var(--text-dim);font-size:9px"> / $${d.profit_target} target</span>` : ''}
+      ${d.loss_limit ? `<span style="color:var(--text-dim);font-size:9px"> | limit $${d.loss_limit}</span>` : ''}</div>`;
+
+    const remaining = d.max_per_day - d.trades_today;
+    const vwapTag   = d.require_vwap ? '<span style="color:var(--cyan)">VWAP✓</span> ' : '';
+    const paperTag  = d.paper ? '<span style="color:var(--yellow)">PAPER</span>' : '<span style="color:var(--red)">LIVE</span>';
+    const activeColor = d.kill_switch ? 'var(--red)' : 'var(--green)';
+    el.innerHTML = `
+      <div style="color:${activeColor};margin-bottom:4px">● ${d.kill_switch ? 'PAUSED' : 'ACTIVE'} ${paperTag}</div>
+      ${killHtml}
+      <div>Verdicts: <b style="color:var(--green)">${d.verdicts.join(', ')}</b></div>
+      <div>${vwapTag}Min score: <b>${d.min_score}</b></div>
+      <div>Trades today: <b>${d.trades_today}/${d.max_per_day}</b>
+        ${remaining > 0 ? `<span style="color:var(--green)">(${remaining} left)</span>` : '<span style="color:var(--red)">(LIMIT HIT)</span>'}</div>
+      ${pnlHtml}
+      ${d.open_orders > 0 ? `<div style="color:var(--yellow)">Open orders: ${d.open_orders}</div>` : ''}
+      ${d.executed.length > 0 ? `<div style="color:var(--text-dim);font-size:10px;margin-top:4px">Traded: ${d.executed.join(', ')}</div>` : ''}
+    `;
+  } catch(e) {
+    const el = document.getElementById('autoTradeStatus');
+    if (el) el.innerHTML = '<span style="color:var(--text-dim)">—</span>';
+  }
+}
+
+async function resetKillSwitch() {
+  try {
+    const r = await fetch('/api/auto-trade/reset-kill', {method:'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      showAlert('✅ Kill switch reset — auto-trading re-enabled', 'green');
+      refreshAutoTradeStatus();
+    }
+  } catch(e) { showAlert('❌ Reset failed', 'red'); }
+}
+
+// Poll auto-trade status every 30s and on load
+refreshAutoTradeStatus();
+setInterval(refreshAutoTradeStatus, 30000);
+
+// ── P&L Dashboard ────────────────────────────────────────────────────────────
+async function showPnlDashboard() {
+  document.getElementById('pnlModal').style.display = 'block';
+  await refreshPnlDashboard();
+}
+
+async function refreshPnlDashboard() {
+  try {
+    const r = await fetch('/api/pnl');
+    if (!r.ok) {
+      const e = await r.json();
+      document.getElementById('pnlSummary').innerHTML =
+        `<div style="color:var(--red);font-size:12px">❌ ${e.error || 'Server error'}</div>`;
+      return;
+    }
+    const d = await r.json();
+
+    // ── Summary tiles ──
+    const tiles = [
+      { label:'EQUITY',     val:`$${d.equity.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}`, color:'var(--cyan)' },
+      { label:'TODAY',      val:`${d.day_pnl>=0?'+':''}$${d.day_pnl.toFixed(2)}`, color:d.day_pnl>=0?'var(--green)':'#f85149' },
+      { label:'TODAY %',    val:`${d.day_pnl_pct>=0?'+':''}${d.day_pnl_pct.toFixed(2)}%`, color:d.day_pnl_pct>=0?'var(--green)':'#f85149' },
+      { label:'THIS WEEK',  val:`${d.week_pnl>=0?'+':''}$${d.week_pnl.toFixed(0)}`, color:d.week_pnl>=0?'var(--green)':'#f85149' },
+      { label:'THIS MONTH', val:`${d.month_pnl>=0?'+':''}$${d.month_pnl.toFixed(0)}`, color:d.month_pnl>=0?'var(--green)':'#f85149' },
+      { label:'AUTO P&L',   val:`${d.today_auto_pnl>=0?'+':''}$${d.today_auto_pnl.toFixed(2)}`, color:d.today_auto_pnl>=0?'var(--green)':'#f85149' },
+    ];
+    document.getElementById('pnlSummary').innerHTML = tiles.map(t => `
+      <div style="background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:4px;padding:10px 12px;text-align:center">
+        <div style="font-size:9px;color:var(--text-dim);letter-spacing:1.5px;font-family:'Bebas Neue',sans-serif;margin-bottom:4px">${t.label}</div>
+        <div style="font-size:18px;font-weight:bold;color:${t.color||'var(--text)'}">${t.val}</div>
+      </div>`).join('');
+
+    // ── Kill switch alert ──
+    const killEl = document.getElementById('pnlKillAlert');
+    if (d.kill_switch) {
+      killEl.style.display = 'block';
+      killEl.innerHTML = `<div style="background:rgba(248,81,73,0.12);border:1px solid rgba(248,81,73,0.4);border-radius:4px;padding:10px 12px;color:#f85149;font-size:12px">
+        🛑 <b>KILL SWITCH ACTIVE</b><br>
+        Auto-trading is paused. Daily P&L hit limit or target.<br>
+        <button onclick="resetKillSwitch()" style="margin-top:6px;padding:4px 10px;background:rgba(248,81,73,0.2);border:1px solid #f85149;color:#f85149;font-size:11px;cursor:pointer;border-radius:2px;font-family:'Bebas Neue',sans-serif;letter-spacing:1px">RESET & RE-ENABLE AUTO-TRADE</button>
+      </div>`;
+    } else {
+      killEl.style.display = 'none';
+    }
+
+    // ── Today's trades ──
+    const tradesEl = document.getElementById('pnlTodayTrades');
+    if (!d.today_trades || !d.today_trades.length) {
+      tradesEl.innerHTML = '<div style="color:var(--text-dim);font-size:11px">No auto-trades recorded today.</div>';
+    } else {
+      const rows = d.today_trades.map(t => {
+        const c = t.pnl >= 0 ? 'var(--green)' : '#f85149';
+        const icon = t.reason === 'target' ? '✅' : t.reason === 'stop' ? '🛑' : '📤';
+        return `<div style="display:grid;grid-template-columns:40px 60px 80px 80px 80px 1fr;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);align-items:center;font-size:11px">
+          <span style="color:var(--text-dim)">${t.time}</span>
+          <span style="color:var(--cyan);font-weight:bold">${t.ticker}</span>
+          <span style="color:var(--text-dim)">${icon} ${t.reason}</span>
+          <span style="color:var(--text-dim)">$${(t.entry||0).toFixed(2)} → $${(t.exit||0).toFixed(2)}</span>
+          <span style="color:var(--text-dim)">${t.shares}sh</span>
+          <span style="color:${c};font-weight:bold">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</span>
+        </div>`;
+      }).join('');
+      const total = d.today_trades.reduce((s,t)=>s+t.pnl,0);
+      const tc = total >= 0 ? 'var(--green)' : '#f85149';
+      tradesEl.innerHTML = rows + `<div style="text-align:right;padding:6px 0;font-size:12px;color:${tc};font-weight:bold">
+        TOTAL: ${total>=0?'+':''}$${total.toFixed(2)}
+      </div>`;
+    }
+
+    // ── 30-day bar chart ──
+    renderPnlBars(d.history || []);
+
+    // ── History table ──
+    const histEl = document.getElementById('pnlHistory');
+    if (d.history && d.history.length) {
+      const hrows = [...d.history].reverse().map(p => {
+        const c = p.pnl >= 0 ? 'var(--green)' : '#f85149';
+        return `<div style="display:grid;grid-template-columns:50px 90px 1fr;gap:8px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:11px">
+          <span style="color:var(--text-dim)">${p.date}</span>
+          <span style="color:${c}">${p.pnl>=0?'+':''}$${p.pnl.toFixed(2)}</span>
+          <span style="color:var(--text-dim)">Equity $${p.equity.toLocaleString('en-US',{maximumFractionDigits:0})}</span>
+        </div>`;
+      }).join('');
+      histEl.innerHTML = hrows;
+    } else {
+      histEl.innerHTML = '<div style="color:var(--text-dim);font-size:11px">No history data available.</div>';
+    }
+
+  } catch(e) {
+    console.error('P&L dashboard error', e);
+    document.getElementById('pnlSummary').innerHTML =
+      '<div style="color:var(--red);font-size:12px">❌ Could not load P&L data — is server running?</div>';
+  }
+}
+
+function renderPnlBars(history) {
+  const canvas = document.getElementById('pnlCanvas');
+  if (!canvas || !history.length) return;
+
+  const container = canvas.parentElement;
+  canvas.width  = container.offsetWidth  || 700;
+  canvas.height = container.offsetHeight || 120;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const vals    = history.map(p => p.pnl);
+  const maxAbs  = Math.max(Math.abs(Math.min(...vals)), Math.abs(Math.max(...vals)), 1);
+  const midY    = canvas.height / 2;
+  const barW    = Math.floor((canvas.width - 20) / vals.length) - 1;
+  const scale   = (canvas.height / 2 - 10) / maxAbs;
+
+  // Zero line
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth   = 1;
+  ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(canvas.width, midY); ctx.stroke();
+
+  vals.forEach((v, i) => {
+    const x    = 10 + i * (barW + 1);
+    const h    = Math.max(Math.abs(v) * scale, 1);
+    const y    = v >= 0 ? midY - h : midY;
+    ctx.fillStyle = v >= 0 ? 'rgba(63,185,80,0.7)' : 'rgba(248,81,73,0.7)';
+    ctx.fillRect(x, y, barW, h);
+  });
+}
+</script>
 
 </body>
 </html>
