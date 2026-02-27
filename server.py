@@ -1841,6 +1841,27 @@ def _load_auto_state():
             _auto_state["kill_switch"]      = data.get("kill_switch", False)
             _auto_state["kill_reason"]      = data.get("kill_reason", "")
         print(f"  ✅ Loaded auto_state from disk: daily_pnl=${_auto_state['daily_pnl']:+.2f}, {len(_auto_state['daily_trades'])} trades")
+        # Fetch all today's filled sell order IDs from Alpaca and mark as logged
+        # so the sweep-now endpoint won't double-count them
+        try:
+            if TRADING_OK:
+                closed = _tc().get_orders(filter=GetOrdersRequest(
+                    status=QueryOrderStatus.CLOSED, limit=100,
+                ))
+                real_ids = set()
+                for o in closed:
+                    ostat = o.status.value if hasattr(o.status, "value") else str(o.status)
+                    oside = o.side.value   if hasattr(o.side,   "value") else str(o.side)
+                    filled_at = o.filled_at or o.updated_at
+                    if ostat == "filled" and oside == "sell":
+                        if filled_at and hasattr(filled_at, 'date'):
+                            if filled_at.date() >= datetime.now().date():
+                                real_ids.add(str(o.id))
+                with _auto_lock:
+                    _auto_state["logged_order_ids"].update(real_ids)
+                print(f"  ✅ Marked {len(real_ids)} today's sell orders as logged (prevents double-count)")
+        except Exception as e2:
+            print(f"  ⚠ Could not pre-populate logged_order_ids: {e2}")
     except Exception as e:
         print(f"  ⚠ Could not load auto_state: {e}")
 

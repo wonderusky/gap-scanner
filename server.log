@@ -18,6 +18,7 @@
 ════════════════════════════════════════════════════
 
   ✅ Loaded auto_state from disk: daily_pnl=$+2025.08, 11 trades
+  ✅ Marked 11 today's sell orders as logged (prevents double-count)
   👁  Order monitor started (checking every 60s)
   🕐 Scheduler started — scanning 08:00–14:30 ET every 5min
  * Serving Flask app 'server'
@@ -27,11 +28,5 @@
  * Running on http://127.0.0.1:5001
  * Running on http://192.168.86.30:5001
 [33mPress CTRL+C to quit[0m
-127.0.0.1 - - [27/Feb/2026 16:09:24] "GET /api/pnl HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:09:26] "GET /api/pnl HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:09:28] "GET /api/status HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:09:28] "GET /api/auto-trade/status HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:09:29] "GET /api/positions HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:09:29] "GET /api/orders HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:09:29] "GET /api/account HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:09:34] "POST /api/auto-trade/sweep-now HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:10:41] "GET /api/auto-trade/status HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:10:45] "POST /api/auto-trade/sweep-now HTTP/1.1" 200 -
