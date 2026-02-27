@@ -2211,6 +2211,77 @@ def _monitor_orders():
                         except Exception as inner_e:
                             print(f"  Monitor check error {info['ticker']}: {inner_e}")
 
+            # ── Sweep for any closed positions not in open_orders ─────────────
+            # Catches manual trades placed before server restart or outside the scanner
+            try:
+                if TRADING_OK and EMAIL_OK:
+                    with _auto_lock:
+                        already_tracked = {info["ticker"] for info in _auto_state["open_orders"].values()}
+                        already_logged  = {t["ticker"] for t in _auto_state["daily_trades"]}
+
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    closed = _tc().get_orders(filter=GetOrdersRequest(
+                        status=QueryOrderStatus.CLOSED,
+                        limit=20,
+                        after=datetime.strptime(today_str, "%Y-%m-%d").replace(
+                            tzinfo=timezone(timedelta(hours=-5))),
+                    ))
+                    for o in closed:
+                        ostat = o.status.value if hasattr(o.status, "value") else str(o.status)
+                        oside = o.side.value   if hasattr(o.side,   "value") else str(o.side)
+                        sym   = o.symbol
+                        if ostat != "filled" or oside != "sell":
+                            continue
+                        if sym in already_tracked or sym in already_logged:
+                            continue
+                        # Found an untracked closed sell — compute P&L from avg prices
+                        fill_price = float(o.filled_avg_price or 0)
+                        qty        = float(o.filled_qty or o.qty or 0)
+                        if not fill_price or not qty:
+                            continue
+                        # Try to find matching buy order for entry price
+                        entry_price = 0.0
+                        try:
+                            buys = _tc().get_orders(filter=GetOrdersRequest(
+                                symbols=[sym], status=QueryOrderStatus.CLOSED, limit=10,
+                                after=datetime.strptime(today_str, "%Y-%m-%d").replace(
+                                    tzinfo=timezone(timedelta(hours=-5))),
+                            ))
+                            for b in buys:
+                                bstat = b.status.value if hasattr(b.status, "value") else str(b.status)
+                                bside = b.side.value   if hasattr(b.side,   "value") else str(b.side)
+                                if bstat == "filled" and bside == "buy":
+                                    entry_price = float(b.filled_avg_price or 0)
+                                    break
+                        except Exception:
+                            pass
+                        if not entry_price:
+                            continue
+
+                        trade_pnl = round((fill_price - entry_price) * qty, 2)
+                        reason    = "manual"
+                        time_str  = datetime.now().strftime("%H:%M")
+                        print(f"  📧 Sweep found untracked trade: {sym} P&L ${trade_pnl:+.2f} — sending email")
+
+                        with _auto_lock:
+                            _auto_state["daily_pnl"] = round(_auto_state["daily_pnl"] + trade_pnl, 2)
+                            _auto_state["daily_trades"].append({
+                                "ticker": sym, "pnl": trade_pnl, "reason": reason,
+                                "time": time_str, "entry": entry_price,
+                                "exit": fill_price, "shares": int(qty),
+                            })
+                            new_daily_pnl = _auto_state["daily_pnl"]
+
+                        threading.Thread(
+                            target=_send_fill_email,
+                            args=(sym, "sell", int(qty), fill_price, entry_price,
+                                  0, 0, str(o.id), reason,
+                                  trade_pnl, new_daily_pnl, False, "", "manual"),
+                            daemon=True
+                        ).start()
+            except Exception as sweep_e:
+                pass  # sweep is best-effort
+
         except Exception as e:
             print(f"  Monitor loop error: {e}")
 
