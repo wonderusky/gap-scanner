@@ -25,16 +25,13 @@
 [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
  * Running on all addresses (0.0.0.0)
  * Running on http://127.0.0.1:5001
- * Running on http://100.92.3.4:5001
+ * Running on http://192.168.86.30:5001
 [33mPress CTRL+C to quit[0m
-127.0.0.1 - - [27/Feb/2026 16:05:45] "GET /api/auto-trade/status HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:06:05] "GET /api/status HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:06:05] "GET /api/auto-trade/status HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:06:05] "GET /api/positions HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:06:05] "GET /api/orders HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:06:06] "GET /api/account HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:06:35] "GET /api/status HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:06:35] "GET /api/auto-trade/status HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:06:35] "GET /api/positions HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:06:35] "GET /api/orders HTTP/1.1" 200 -
-127.0.0.1 - - [27/Feb/2026 16:06:36] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:09:24] "GET /api/pnl HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:09:26] "GET /api/pnl HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:09:28] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:09:28] "GET /api/auto-trade/status HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:09:29] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:09:29] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:09:29] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:09:34] "POST /api/auto-trade/sweep-now HTTP/1.1" 200 -

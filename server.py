@@ -2386,6 +2386,9 @@ def api_sweep_now():
         return jsonify({"ok": False, "error": str(e), "results": results})
 
     return jsonify({"ok": True, "results": results})
+
+
+@app.route("/api/pnl")
 def api_pnl():
     """
     Daily + weekly + monthly P&L from Alpaca portfolio history.
