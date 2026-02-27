@@ -16,6 +16,7 @@ Run every morning:
 
 import os
 import re
+import json
 import threading
 import concurrent.futures
 import xml.etree.ElementTree as ET
@@ -1789,17 +1790,59 @@ def api_test_email():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # Tracks auto-trade state across the session
+_AUTO_STATE_FILE = os.path.join(os.path.dirname(__file__), "auto_state.json")
+
 _auto_state = {
     "trades_today":    0,
-    "last_reset_day":  None,          # date string YYYY-MM-DD
-    "open_orders":     {},            # order_id → trade_info dict
-    "executed":        set(),         # tickers already traded today
-    "daily_pnl":       0.0,          # realized P&L for today ($)
-    "daily_trades":    [],            # list of {ticker, pnl, reason, time}
-    "kill_switch":     False,         # True = auto-trade paused by loss limit
-    "kill_reason":     "",            # why kill switch fired
+    "last_reset_day":  None,
+    "open_orders":     {},
+    "executed":        set(),
+    "daily_pnl":       0.0,
+    "daily_trades":    [],
+    "kill_switch":     False,
+    "kill_reason":     "",
+    "logged_order_ids": set(),
 }
 _auto_lock = threading.Lock()
+
+
+def _save_auto_state():
+    """Persist daily P&L state to disk so restarts don't wipe it."""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        data = {
+            "date":            today,
+            "daily_pnl":       _auto_state["daily_pnl"],
+            "daily_trades":    _auto_state["daily_trades"],
+            "logged_order_ids": list(_auto_state.get("logged_order_ids", set())),
+            "kill_switch":     _auto_state["kill_switch"],
+            "kill_reason":     _auto_state["kill_reason"],
+        }
+        with open(_AUTO_STATE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"  ⚠ Could not save auto_state: {e}")
+
+
+def _load_auto_state():
+    """Load persisted daily state on startup (today's data only)."""
+    try:
+        if not os.path.exists(_AUTO_STATE_FILE):
+            return
+        with open(_AUTO_STATE_FILE) as f:
+            data = json.load(f)
+        today = datetime.now().strftime("%Y-%m-%d")
+        if data.get("date") != today:
+            return  # stale — different day, ignore
+        with _auto_lock:
+            _auto_state["daily_pnl"]        = data.get("daily_pnl", 0.0)
+            _auto_state["daily_trades"]     = data.get("daily_trades", [])
+            _auto_state["logged_order_ids"] = set(data.get("logged_order_ids", []))
+            _auto_state["kill_switch"]      = data.get("kill_switch", False)
+            _auto_state["kill_reason"]      = data.get("kill_reason", "")
+        print(f"  ✅ Loaded auto_state from disk: daily_pnl=${_auto_state['daily_pnl']:+.2f}, {len(_auto_state['daily_trades'])} trades")
+    except Exception as e:
+        print(f"  ⚠ Could not load auto_state: {e}")
 
 
 def _auto_reset_daily():
@@ -2197,6 +2240,7 @@ def _monitor_orders():
                                     # Remove from tracking
                                     with _auto_lock:
                                         _auto_state["open_orders"].pop(order_id, None)
+                                    _save_auto_state()
 
                                     # Send fill email (include kill switch alert if fired)
                                     threading.Thread(
@@ -2211,85 +2255,7 @@ def _monitor_orders():
                         except Exception as inner_e:
                             print(f"  Monitor check error {info['ticker']}: {inner_e}")
 
-            # ── Sweep for any closed trades not yet logged ────────────────────
-            try:
-                if TRADING_OK and EMAIL_OK:
-                    with _auto_lock:
-                        tracked_ids = set(_auto_state["open_orders"].keys())
-                        logged_ids  = set(_auto_state.get("logged_order_ids", set()))
-
-                    closed = _tc().get_orders(filter=GetOrdersRequest(
-                        status=QueryOrderStatus.CLOSED,
-                        limit=50,
-                    ))
-
-                    for o in closed:
-                        oid   = str(o.id)
-                        ostat = o.status.value if hasattr(o.status, "value") else str(o.status)
-                        oside = o.side.value   if hasattr(o.side,   "value") else str(o.side)
-                        sym   = o.symbol
-
-                        if ostat != "filled" or oside != "sell":
-                            continue
-                        if oid in tracked_ids or oid in logged_ids:
-                            continue
-
-                        # Only process today's orders
-                        filled_at = o.filled_at or o.updated_at
-                        if filled_at:
-                            fa = filled_at if hasattr(filled_at, 'date') else None
-                            if fa and fa.date() < datetime.now().date():
-                                continue
-
-                        fill_price = float(o.filled_avg_price or 0)
-                        qty        = float(o.filled_qty or o.qty or 0)
-                        if not fill_price or not qty:
-                            continue
-
-                        # Find matching buy order for entry price
-                        entry_price = 0.0
-                        try:
-                            buys = _tc().get_orders(filter=GetOrdersRequest(
-                                symbols=[sym], status=QueryOrderStatus.CLOSED, limit=20,
-                            ))
-                            for b in buys:
-                                bstat = b.status.value if hasattr(b.status, "value") else str(b.status)
-                                bside = b.side.value   if hasattr(b.side,   "value") else str(b.side)
-                                if bstat == "filled" and bside == "buy":
-                                    entry_price = float(b.filled_avg_price or 0)
-                                    break
-                        except Exception:
-                            pass
-
-                        if not entry_price:
-                            continue
-
-                        trade_pnl = round((fill_price - entry_price) * qty, 2)
-                        time_str  = datetime.now().strftime("%H:%M")
-                        print(f"  📧 Sweep: untracked trade {sym} exit ${fill_price:.2f}  P&L ${trade_pnl:+.2f} — emailing")
-
-                        with _auto_lock:
-                            _auto_state["daily_pnl"] = round(_auto_state["daily_pnl"] + trade_pnl, 2)
-                            _auto_state["daily_trades"].append({
-                                "ticker": sym, "pnl": trade_pnl, "reason": "manual",
-                                "time": time_str, "entry": entry_price,
-                                "exit": fill_price, "shares": int(qty),
-                            })
-                            if "logged_order_ids" not in _auto_state:
-                                _auto_state["logged_order_ids"] = set()
-                            _auto_state["logged_order_ids"].add(oid)
-                            new_daily_pnl = _auto_state["daily_pnl"]
-
-                        threading.Thread(
-                            target=_send_fill_email,
-                            args=(sym, "sell", int(qty), fill_price, entry_price,
-                                  0, 0, oid, "manual",
-                                  trade_pnl, new_daily_pnl, False, "", "manual"),
-                            daemon=True
-                        ).start()
-
-            except Exception as sweep_e:
-                print(f"  Sweep error: {sweep_e}")
+            # Auto background sweep disabled — use POST /api/auto-trade/sweep-now to backfill manually
 
         except Exception as e:
             print(f"  Monitor loop error: {e}")
@@ -2402,6 +2368,7 @@ def api_sweep_now():
                     _auto_state["logged_order_ids"] = set()
                 _auto_state["logged_order_ids"].add(oid)
                 new_daily_pnl = _auto_state["daily_pnl"]
+            _save_auto_state()
 
             threading.Thread(
                 target=_send_fill_email,
@@ -2762,8 +2729,8 @@ if __name__ == "__main__":
     print(f"  Server:    http://localhost:5001")
     print(f"  Debug:     http://localhost:5001/api/diagnostic")
     print("═"*52 + "\n")
+    _load_auto_state()
+    _start_order_monitor()
     if SCHEDULER_ENABLED:
         _start_scheduler()
-    if AUTO_TRADE_ENABLED and TRADING_OK:
-        _start_order_monitor()
     app.run(host="0.0.0.0", port=5001, debug=False)

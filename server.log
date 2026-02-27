@@ -1,0 +1,40 @@
+/Users/johnshelest/Code/trading/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+ * Tip: There are .env files present. Install python-dotenv to use them.
+
+════════════════════════════════════════════════════
+  GAP SCANNER — Alpaca + yfinance
+════════════════════════════════════════════════════
+  Alpaca:    ✅
+  Trading:   ✅ PAPER
+  yfinance:  ✅ v1.2.0
+  API Keys:  ✅
+  Universe:  dynamic (top gainers + most active + 85 watchlist)
+  Email:     ✅ wonderusky@gmail.com
+  Scheduler: ✅ every 5min  08:00–14:30 ET
+  Auto-trade:✅ GO+VWAP  max 3/day  PAPER
+  Server:    http://localhost:5001
+  Debug:     http://localhost:5001/api/diagnostic
+════════════════════════════════════════════════════
+
+  ✅ Loaded auto_state from disk: daily_pnl=$+2025.08, 11 trades
+  👁  Order monitor started (checking every 60s)
+  🕐 Scheduler started — scanning 08:00–14:30 ET every 5min
+ * Serving Flask app 'server'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5001
+ * Running on http://100.92.3.4:5001
+[33mPress CTRL+C to quit[0m
+127.0.0.1 - - [27/Feb/2026 16:05:45] "GET /api/auto-trade/status HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:06:05] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:06:05] "GET /api/auto-trade/status HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:06:05] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:06:05] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:06:06] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:06:35] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:06:35] "GET /api/auto-trade/status HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:06:35] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:06:35] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [27/Feb/2026 16:06:36] "GET /api/account HTTP/1.1" 200 -
