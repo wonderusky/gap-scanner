@@ -1009,6 +1009,8 @@ def run_scan_background(filters):
             _cache["last_updated"] = datetime.now(timezone.utc).isoformat()
             _cache["status"]       = "done"
             _cache["meta"]         = meta
+        # Log GO/WATCH setups to shadow log (same as auto-scheduler)
+        _log_setups(results)
     except Exception as e:
         with _cache_lock:
             _cache["status"] = "error"
