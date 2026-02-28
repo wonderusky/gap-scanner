@@ -1878,6 +1878,59 @@ def _load_auto_state():
         print(f"  ⚠ Could not load auto_state: {e}")
 
 
+def _recover_open_positions():
+    """
+    On startup, scan Alpaca for any open positions not already in open_orders.
+    Registers them so the exit ladder manages them immediately.
+    Uses avg_entry_price from Alpaca and a 2% stop as default.
+    """
+    if not TRADING_OK:
+        return
+    try:
+        positions = _tc().get_all_positions()
+        if not positions:
+            return
+        with _auto_lock:
+            already = {info["ticker"] for info in _auto_state["open_orders"].values()}
+
+        recovered = 0
+        for pos in positions:
+            sym = pos.symbol
+            if sym in already:
+                continue
+            qty        = int(float(pos.qty))
+            entry      = float(pos.avg_entry_price)
+            stop_dist  = entry * 0.02
+            stop       = round(entry - stop_dist, 2)
+            target     = round(entry + stop_dist * 2, 2)  # 2R target
+
+            # Synthetic order ID for tracking
+            synthetic_id = f"recovered-{sym}-{datetime.now().strftime('%H%M%S')}"
+            trade_info = {
+                "ticker":      sym,
+                "order_id":    synthetic_id,
+                "shares":      qty,
+                "entry_price": entry,
+                "stop":        stop,
+                "target1":     target,
+                "status":      "filled",
+                "source":      "manual",
+                "partial_done": False,
+                "high_water":  entry,
+                "filled_at":   datetime.now(timezone.utc).isoformat(),
+                "recovered":   True,
+            }
+            with _auto_lock:
+                _auto_state["open_orders"][synthetic_id] = trade_info
+            recovered += 1
+            print(f"  🔄 Recovered open position: {sym} {qty}sh @ ${entry:.2f}  stop=${stop:.2f}  target=${target:.2f}")
+
+        if recovered:
+            print(f"  ✅ Recovered {recovered} open position(s) — exit ladder active")
+    except Exception as e:
+        print(f"  ⚠ Could not recover open positions: {e}")
+
+
 def _auto_reset_daily():
     """Reset daily counters if it's a new trading day."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -2991,6 +3044,7 @@ if __name__ == "__main__":
     print(f"  Debug:     http://localhost:5001/api/diagnostic")
     print("═"*52 + "\n")
     _load_auto_state()
+    _recover_open_positions()
     _start_order_monitor()
     if SCHEDULER_ENABLED:
         _start_scheduler()
