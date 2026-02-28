@@ -26,9 +26,8 @@
  * Running on http://127.0.0.1:5001
  * Running on http://100.92.3.4:5001
 [33mPress CTRL+C to quit[0m
-127.0.0.1 - - [28/Feb/2026 09:23:35] "GET /api/status HTTP/1.1" 200 -
-127.0.0.1 - - [28/Feb/2026 09:23:37] "GET /api/status HTTP/1.1" 200 -
-127.0.0.1 - - [28/Feb/2026 09:23:37] "GET /api/auto-trade/status HTTP/1.1" 200 -
-127.0.0.1 - - [28/Feb/2026 09:23:37] "GET /api/positions HTTP/1.1" 200 -
-127.0.0.1 - - [28/Feb/2026 09:23:37] "GET /api/orders HTTP/1.1" 200 -
-127.0.0.1 - - [28/Feb/2026 09:23:37] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [28/Feb/2026 09:30:28] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [28/Feb/2026 09:30:28] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [28/Feb/2026 09:30:28] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [28/Feb/2026 09:30:29] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [28/Feb/2026 09:30:30] "GET /api/pnl HTTP/1.1" 200 -

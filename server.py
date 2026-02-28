@@ -2244,6 +2244,18 @@ def _get_vwap(ticker):
     except Exception:
         return None
 
+def _get_day_open(ticker):
+    """Get today's regular market open price (9:30 AM ET first bar)."""
+    try:
+        import yfinance as yf
+        df = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
+        if df.empty:
+            return None
+        # First bar of the regular session is the day open
+        return float(df["Open"].iloc[0])
+    except Exception:
+        return None
+
 def _cancel_open_orders_for(ticker):
     """Cancel all open orders for a ticker (bracket legs etc)."""
     try:
@@ -2297,10 +2309,11 @@ def _run_exit_ladder(order_id, info, tc):
     Active exit management for a filled position.
     Called every monitor cycle. Implements the exit ladder:
       1. No-follow-through: exit if price < entry+1R after N minutes
-      2. Partial at +2R: sell 50%, move stop to breakeven
-      3. Trailing stop 1.5% on remainder
-      4. Hard time exit at EXIT_HARD_TIME ET
-      5. VWAP break exit on remainder
+      2. Hard time exit at EXIT_HARD_TIME ET
+      3. Partial at +2R: sell 50%, move stop to breakeven
+      4. Trailing stop 1.5% on remainder
+      5. Day open break: exit if price drops below today's open (gap thesis dead)
+      6. VWAP break: exit remainder if price drops below VWAP on remainder
     """
     ticker     = info["ticker"]
     entry      = info["entry_price"]
@@ -2415,7 +2428,28 @@ def _run_exit_ladder(order_id, info, tc):
                     daemon=True).start()
             return
 
-    # ── 5. VWAP BREAK EXIT ────────────────────────────────────────────────────
+    # ── 5. DAY OPEN BREAK EXIT ────────────────────────────────────────────────
+    # If price falls below today's regular session open the gap thesis is dead.
+    # Applies to both full position (before partial) and remainder (after partial).
+    if shares > 0:
+        day_open = _get_day_open(ticker)
+        if day_open and price < day_open:
+            print(f"  📉 DAY OPEN BREAK {ticker}: price ${price:.2f} < open ${day_open:.2f} — gap thesis dead")
+            _cancel_open_orders_for(ticker)
+            order = _market_sell(ticker, shares, "day_open_break")
+            if order:
+                trade_pnl, new_daily_pnl = _log_exit_trade(ticker, shares, entry, price, "day_open_break", info.get("source","auto"))
+                with _auto_lock:
+                    _auto_state["open_orders"].pop(order_id, None)
+                _save_auto_state()
+                threading.Thread(target=_send_fill_email,
+                    args=(ticker, "sell", shares, price, entry, stop, info.get("target1", entry),
+                          order_id, "day_open_break", trade_pnl, new_daily_pnl, False, "", info.get("source","auto")),
+                    daemon=True).start()
+            return
+
+    # ── 6. VWAP BREAK EXIT ────────────────────────────────────────────────────
+    # Only on remainder after partial — VWAP is a secondary confirmation
     if EXIT_VWAP_BREAK and partial_done and shares > 0:
         vwap = _get_vwap(ticker)
         if vwap and price < vwap:
