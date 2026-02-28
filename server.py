@@ -91,6 +91,12 @@ try:
     AUTO_MONITOR_INTERVAL   = getattr(config, "AUTO_MONITOR_INTERVAL",   60)
     AUTO_DAILY_LOSS_LIMIT   = getattr(config, "AUTO_DAILY_LOSS_LIMIT",   -500)
     AUTO_DAILY_PROFIT_TARGET= getattr(config, "AUTO_DAILY_PROFIT_TARGET", 1000)
+    EXIT_NO_FOLLOW_THROUGH  = getattr(config, "EXIT_NO_FOLLOW_THROUGH",  True)
+    EXIT_NO_FOLLOW_MINUTES  = getattr(config, "EXIT_NO_FOLLOW_MINUTES",  5)
+    EXIT_PARTIAL_AT_2R      = getattr(config, "EXIT_PARTIAL_AT_2R",      True)
+    EXIT_TRAIL_PCT          = getattr(config, "EXIT_TRAIL_PCT",          1.5)
+    EXIT_HARD_TIME          = getattr(config, "EXIT_HARD_TIME",          "10:00")
+    EXIT_VWAP_BREAK         = getattr(config, "EXIT_VWAP_BREAK",         True)
 except ImportError:
     API_KEY    = os.environ.get("ALPACA_API_KEY", "")
     API_SECRET = os.environ.get("ALPACA_SECRET_KEY", "")
@@ -110,6 +116,12 @@ except ImportError:
     AUTO_MONITOR_INTERVAL   = 60
     AUTO_DAILY_LOSS_LIMIT   = -500
     AUTO_DAILY_PROFIT_TARGET= 1000
+    EXIT_NO_FOLLOW_THROUGH  = True
+    EXIT_NO_FOLLOW_MINUTES  = 5
+    EXIT_PARTIAL_AT_2R      = True
+    EXIT_TRAIL_PCT          = 1.5
+    EXIT_HARD_TIME          = "10:00"
+    EXIT_VWAP_BREAK         = True
 
 def _tc():
     """Return a cached TradingClient (paper or live per config)."""
@@ -2150,6 +2162,223 @@ def _auto_execute(results):
     return placed
 
 
+# ── Exit ladder helpers ───────────────────────────────────────────────────────
+
+def _get_current_price(ticker):
+    """Get latest trade price for ticker."""
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockLatestTradeRequest
+        dc = StockHistoricalDataClient(API_KEY, API_SECRET)
+        snap = dc.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=ticker))
+        return float(snap[ticker].price)
+    except Exception:
+        return None
+
+def _get_vwap(ticker):
+    """Get current VWAP from 1-min bars since market open today."""
+    try:
+        import yfinance as yf
+        df = yf.download(ticker, period="1d", interval="1m", progress=False, auto_adjust=True)
+        if df.empty:
+            return None
+        df["tp"]  = (df["High"] + df["Low"] + df["Close"]) / 3
+        df["tpv"] = df["tp"] * df["Volume"]
+        vwap = df["tpv"].cumsum() / df["Volume"].cumsum()
+        return float(vwap.iloc[-1])
+    except Exception:
+        return None
+
+def _cancel_open_orders_for(ticker):
+    """Cancel all open orders for a ticker (bracket legs etc)."""
+    try:
+        tc = _tc()
+        orders = tc.get_orders(filter=GetOrdersRequest(
+            symbols=[ticker], status=QueryOrderStatus.OPEN, limit=20
+        ))
+        for o in orders:
+            try:
+                tc.cancel_order_by_id(str(o.id))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def _market_sell(ticker, qty, reason="exit"):
+    """Place a market sell order for qty shares."""
+    try:
+        from alpaca.trading.requests import MarketOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+        tc = _tc()
+        order = tc.submit_order(MarketOrderRequest(
+            symbol=ticker, qty=qty, side=OrderSide.SELL,
+            time_in_force=TimeInForce.DAY,
+        ))
+        print(f"  📤 {reason.upper()} SELL {ticker} {qty}sh → order {str(order.id)[:8]}")
+        return order
+    except Exception as e:
+        print(f"  ❌ market_sell {ticker} failed: {e}")
+        return None
+
+def _log_exit_trade(ticker, qty, entry_price, exit_price, reason, source="auto"):
+    """Log a closed trade to daily P&L state and save."""
+    trade_pnl = round((exit_price - entry_price) * qty, 2)
+    time_str  = datetime.now().strftime("%H:%M")
+    with _auto_lock:
+        _auto_state["daily_pnl"] = round(_auto_state["daily_pnl"] + trade_pnl, 2)
+        _auto_state["daily_trades"].append({
+            "ticker": ticker, "pnl": trade_pnl, "reason": reason,
+            "time": time_str, "entry": entry_price,
+            "exit": exit_price, "shares": qty,
+        })
+        new_daily_pnl = _auto_state["daily_pnl"]
+    _save_auto_state()
+    print(f"  💰 {ticker} {reason}: {qty}sh  ${entry_price:.2f}→${exit_price:.2f}  P&L ${trade_pnl:+.2f}  day=${new_daily_pnl:+.2f}")
+    return trade_pnl, new_daily_pnl
+
+
+def _run_exit_ladder(order_id, info, tc):
+    """
+    Active exit management for a filled position.
+    Called every monitor cycle. Implements the exit ladder:
+      1. No-follow-through: exit if price < entry+1R after N minutes
+      2. Partial at +2R: sell 50%, move stop to breakeven
+      3. Trailing stop 1.5% on remainder
+      4. Hard time exit at EXIT_HARD_TIME ET
+      5. VWAP break exit on remainder
+    """
+    ticker     = info["ticker"]
+    entry      = info["entry_price"]
+    stop       = info["stop"]
+    shares     = info["shares"]           # current shares (may have been halved)
+    partial_done = info.get("partial_done", False)
+    high_water   = info.get("high_water", entry)
+    filled_at    = info.get("filled_at")
+
+    stop_dist = entry - stop              # always positive
+    if stop_dist <= 0:
+        return
+
+    price = _get_current_price(ticker)
+    if not price:
+        return
+
+    # Update high water mark
+    if price > high_water:
+        with _auto_lock:
+            if order_id in _auto_state["open_orders"]:
+                _auto_state["open_orders"][order_id]["high_water"] = price
+        high_water = price
+
+    now_et = datetime.now()  # server is local time
+    now_time_str = now_et.strftime("%H:%M")
+
+    # ── 1. HARD TIME EXIT ──────────────────────────────────────────────────────
+    if EXIT_HARD_TIME and now_time_str >= EXIT_HARD_TIME:
+        print(f"  ⏰ HARD TIME EXIT {ticker} @ {now_time_str} — selling {shares}sh")
+        _cancel_open_orders_for(ticker)
+        order = _market_sell(ticker, shares, "time_exit")
+        if order:
+            trade_pnl, new_daily_pnl = _log_exit_trade(ticker, shares, entry, price, "time_exit", info.get("source","auto"))
+            with _auto_lock:
+                _auto_state["open_orders"].pop(order_id, None)
+            _save_auto_state()
+            threading.Thread(target=_send_fill_email,
+                args=(ticker, "sell", shares, price, entry, stop, info.get("target1", entry),
+                      order_id, "time_exit", trade_pnl, new_daily_pnl, False, "", info.get("source","auto")),
+                daemon=True).start()
+        return
+
+    # ── 2. NO-FOLLOW-THROUGH ───────────────────────────────────────────────────
+    if EXIT_NO_FOLLOW_THROUGH and filled_at and not partial_done:
+        try:
+            from datetime import datetime as dt
+            filled_dt = dt.fromisoformat(filled_at.replace("Z", "+00:00"))
+            elapsed_min = (datetime.now(timezone.utc) - filled_dt).total_seconds() / 60
+            if elapsed_min >= EXIT_NO_FOLLOW_MINUTES and price < entry + stop_dist:
+                print(f"  ❌ NO FOLLOW-THROUGH {ticker}: price ${price:.2f} < 1R target ${entry+stop_dist:.2f} after {elapsed_min:.1f}min")
+                _cancel_open_orders_for(ticker)
+                order = _market_sell(ticker, shares, "no_follow")
+                if order:
+                    trade_pnl, new_daily_pnl = _log_exit_trade(ticker, shares, entry, price, "no_follow", info.get("source","auto"))
+                    with _auto_lock:
+                        _auto_state["open_orders"].pop(order_id, None)
+                    _save_auto_state()
+                    threading.Thread(target=_send_fill_email,
+                        args=(ticker, "sell", shares, price, entry, stop, info.get("target1", entry),
+                              order_id, "no_follow", trade_pnl, new_daily_pnl, False, "", info.get("source","auto")),
+                        daemon=True).start()
+                return
+        except Exception:
+            pass
+
+    # ── 3. PARTIAL AT +2R ─────────────────────────────────────────────────────
+    if EXIT_PARTIAL_AT_2R and not partial_done:
+        target_2r = entry + (stop_dist * 2)
+        if price >= target_2r:
+            partial_qty = max(1, shares // 2)
+            remain_qty  = shares - partial_qty
+            print(f"  🎯 +2R PARTIAL {ticker}: selling {partial_qty}sh @ ${price:.2f}, keeping {remain_qty}sh with BE stop")
+            _cancel_open_orders_for(ticker)
+            order = _market_sell(ticker, partial_qty, "partial_2r")
+            if order:
+                trade_pnl, new_daily_pnl = _log_exit_trade(ticker, partial_qty, entry, price, "partial_2r", info.get("source","auto"))
+                # Update order info: halve shares, move stop to breakeven, mark partial done
+                with _auto_lock:
+                    if order_id in _auto_state["open_orders"]:
+                        _auto_state["open_orders"][order_id]["shares"]       = remain_qty
+                        _auto_state["open_orders"][order_id]["stop"]         = entry  # breakeven
+                        _auto_state["open_orders"][order_id]["partial_done"] = True
+                        _auto_state["open_orders"][order_id]["high_water"]   = price
+                _save_auto_state()
+                threading.Thread(target=_send_fill_email,
+                    args=(ticker, "sell", partial_qty, price, entry, stop, info.get("target1", entry),
+                          order_id, "partial_2r", trade_pnl, new_daily_pnl, False, "", info.get("source","auto")),
+                    daemon=True).start()
+                if remain_qty <= 0:
+                    with _auto_lock:
+                        _auto_state["open_orders"].pop(order_id, None)
+            return
+
+    # ── 4. TRAILING STOP on remainder ─────────────────────────────────────────
+    if EXIT_TRAIL_PCT > 0 and partial_done and shares > 0:
+        trail_stop = high_water * (1 - EXIT_TRAIL_PCT / 100)
+        be_stop    = info.get("stop", entry)  # breakeven after partial
+        effective_stop = max(trail_stop, be_stop)
+        if price <= effective_stop:
+            print(f"  📉 TRAIL STOP {ticker}: price ${price:.2f} ≤ trail ${effective_stop:.2f} (HW=${high_water:.2f})")
+            _cancel_open_orders_for(ticker)
+            order = _market_sell(ticker, shares, "trail_stop")
+            if order:
+                trade_pnl, new_daily_pnl = _log_exit_trade(ticker, shares, entry, price, "trail_stop", info.get("source","auto"))
+                with _auto_lock:
+                    _auto_state["open_orders"].pop(order_id, None)
+                _save_auto_state()
+                threading.Thread(target=_send_fill_email,
+                    args=(ticker, "sell", shares, price, entry, stop, info.get("target1", entry),
+                          order_id, "trail_stop", trade_pnl, new_daily_pnl, False, "", info.get("source","auto")),
+                    daemon=True).start()
+            return
+
+    # ── 5. VWAP BREAK EXIT ────────────────────────────────────────────────────
+    if EXIT_VWAP_BREAK and partial_done and shares > 0:
+        vwap = _get_vwap(ticker)
+        if vwap and price < vwap:
+            print(f"  📉 VWAP BREAK {ticker}: price ${price:.2f} < VWAP ${vwap:.2f}")
+            _cancel_open_orders_for(ticker)
+            order = _market_sell(ticker, shares, "vwap_break")
+            if order:
+                trade_pnl, new_daily_pnl = _log_exit_trade(ticker, shares, entry, price, "vwap_break", info.get("source","auto"))
+                with _auto_lock:
+                    _auto_state["open_orders"].pop(order_id, None)
+                _save_auto_state()
+                threading.Thread(target=_send_fill_email,
+                    args=(ticker, "sell", shares, price, entry, stop, info.get("target1", entry),
+                          order_id, "vwap_break", trade_pnl, new_daily_pnl, False, "", info.get("source","auto")),
+                    daemon=True).start()
+            return
+
+
 def _monitor_orders():
     """
     Background thread — polls open auto-orders every AUTO_MONITOR_INTERVAL seconds.
@@ -2173,6 +2402,7 @@ def _monitor_orders():
                             with _auto_lock:
                                 if _auto_state["open_orders"].get(order_id, {}).get("status") == "open":
                                     _auto_state["open_orders"][order_id]["status"] = "filled"
+                                    _auto_state["open_orders"][order_id]["filled_at"] = datetime.now(timezone.utc).isoformat()
                                     print(f"  ✅ Order filled: {info['ticker']} [{order_id[:8]}]")
 
                         elif status in ("replaced",):
@@ -2180,12 +2410,19 @@ def _monitor_orders():
                             with _auto_lock:
                                 if _auto_state["open_orders"].get(order_id, {}).get("status") == "open":
                                     _auto_state["open_orders"][order_id]["status"] = "filled"
+                                    _auto_state["open_orders"][order_id]["filled_at"] = datetime.now(timezone.utc).isoformat()
                                     print(f"  ✅ Bracket replaced→filled: {info['ticker']} [{order_id[:8]}]")
 
                         elif status in ("canceled", "expired"):
                             with _auto_lock:
                                 _auto_state["open_orders"].pop(order_id, None)
                             print(f"  ↩  Order {status}: {info['ticker']} [{order_id[:8]}]")
+
+                        # ── Exit ladder — runs every cycle for filled positions ──
+                        with _auto_lock:
+                            current_info = dict(_auto_state["open_orders"].get(order_id, {}))
+                        if current_info.get("status") == "filled" and current_info.get("shares", 0) > 0:
+                            _run_exit_ladder(order_id, current_info, tc)
 
                     except Exception as e:
                         # Order may have been replaced by bracket legs — check positions
