@@ -2272,16 +2272,32 @@ def _cancel_open_orders_for(ticker):
         pass
 
 def _market_sell(ticker, qty, reason="exit"):
-    """Place a market sell order for qty shares."""
+    """Place a market sell order — only if long position exists, to prevent accidental shorts."""
     try:
         from alpaca.trading.requests import MarketOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
         tc = _tc()
+
+        # Safety: verify we hold a long position before selling
+        # Without this check, selling a bracket-closed position opens an unintended short
+        try:
+            pos = tc.get_open_position(ticker)
+            held_qty  = int(float(pos.qty))
+            side_held = pos.side.value if hasattr(pos.side, 'value') else str(pos.side)
+            if side_held != 'long' or held_qty <= 0:
+                print(f"  ⚠ _market_sell {ticker}: no long position (side={side_held} qty={held_qty}) — skipping")
+                return None
+            sell_qty = min(qty, held_qty)  # never sell more than we hold
+        except Exception:
+            # get_open_position raises if position doesn't exist
+            print(f"  ⚠ _market_sell {ticker}: position already closed by bracket — skipping")
+            return None
+
         order = tc.submit_order(MarketOrderRequest(
-            symbol=ticker, qty=qty, side=OrderSide.SELL,
+            symbol=ticker, qty=sell_qty, side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY,
         ))
-        print(f"  📤 {reason.upper()} SELL {ticker} {qty}sh → order {str(order.id)[:8]}")
+        print(f"  📤 {reason.upper()} SELL {ticker} {sell_qty}sh → order {str(order.id)[:8]}")
         return order
     except Exception as e:
         print(f"  ❌ market_sell {ticker} failed: {e}")
@@ -2325,6 +2341,32 @@ def _run_exit_ladder(order_id, info, tc):
 
     stop_dist = entry - stop              # always positive
     if stop_dist <= 0:
+        return
+
+    # ── Check position still exists before doing anything ─────────────────────
+    # If bracket's stop/target leg already closed it, remove from tracking
+    try:
+        pos = _tc().get_open_position(ticker)
+        actual_qty = int(float(pos.qty))
+        side_held  = pos.side.value if hasattr(pos.side, 'value') else str(pos.side)
+        if side_held != 'long' or actual_qty <= 0:
+            print(f"  ✅ {ticker}: bracket closed position — removing from ladder")
+            with _auto_lock:
+                _auto_state["open_orders"].pop(order_id, None)
+            _save_auto_state()
+            return
+        # Sync shares to actual held qty in case partial was done externally
+        if actual_qty != shares:
+            shares = actual_qty
+            with _auto_lock:
+                if order_id in _auto_state["open_orders"]:
+                    _auto_state["open_orders"][order_id]["shares"] = actual_qty
+    except Exception:
+        # Position doesn't exist — bracket already closed it
+        print(f"  ✅ {ticker}: position gone — removing from ladder")
+        with _auto_lock:
+            _auto_state["open_orders"].pop(order_id, None)
+        _save_auto_state()
         return
 
     price = _get_current_price(ticker)
