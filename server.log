@@ -17,8 +17,11 @@
   Debug:     http://localhost:5001/api/diagnostic
 ════════════════════════════════════════════════════
 
-  ✅ Loaded auto_state from disk: daily_pnl=$+326.68, 5 trades
-  ✅ Marked 8 today's sell orders as logged (prevents double-count)
+  ✅ Loaded auto_state from disk: daily_pnl=$+0.00, 0 trades
+  ✅ Marked 1 today's sell orders as logged (prevents double-count)
+  🔄 Recovered open position: TSLS 3972sh @ $5.80  stop=$5.68  target=$6.03
+  🔄 Recovered open position: TZA 3432sh @ $6.71  stop=$6.58  target=$6.98
+  ✅ Recovered 2 open position(s) — exit ladder active
   👁  Order monitor started (checking every 30s)
   🕐 Scheduler started — scanning 08:00–10:00 ET every 5min
  * Serving Flask app 'server'
@@ -28,10 +31,12 @@
  * Running on http://127.0.0.1:5001
  * Running on http://100.92.3.4:5001
 [33mPress CTRL+C to quit[0m
-127.0.0.1 - - [02/Mar/2026 10:06:09] "GET /api/positions HTTP/1.1" 200 -
-127.0.0.1 - - [02/Mar/2026 10:06:09] "GET /api/orders HTTP/1.1" 200 -
-127.0.0.1 - - [02/Mar/2026 10:06:10] "GET /api/account HTTP/1.1" 200 -
-127.0.0.1 - - [02/Mar/2026 10:06:12] "GET /api/status HTTP/1.1" 200 -
-127.0.0.1 - - [02/Mar/2026 10:06:14] "GET /api/positions HTTP/1.1" 200 -
-127.0.0.1 - - [02/Mar/2026 10:06:15] "GET /api/orders HTTP/1.1" 200 -
-127.0.0.1 - - [02/Mar/2026 10:06:15] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [03/Mar/2026 09:14:19] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [03/Mar/2026 09:14:19] "GET /api/auto-trade/status HTTP/1.1" 200 -
+127.0.0.1 - - [03/Mar/2026 09:14:19] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [03/Mar/2026 09:14:20] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [03/Mar/2026 09:14:20] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [03/Mar/2026 09:14:21] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [03/Mar/2026 09:14:24] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [03/Mar/2026 09:14:25] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [03/Mar/2026 09:14:25] "GET /api/account HTTP/1.1" 200 -

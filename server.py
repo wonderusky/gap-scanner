@@ -1011,6 +1011,9 @@ def run_scan_background(filters):
             _cache["meta"]         = meta
         # Log GO/WATCH setups to shadow log (same as auto-scheduler)
         _log_setups(results)
+        # Auto-execute on manual scans too — same gates apply
+        if AUTO_TRADE_ENABLED:
+            _auto_execute(results)
     except Exception as e:
         with _cache_lock:
             _cache["status"] = "error"
@@ -2097,6 +2100,10 @@ def _auto_execute(results):
 
     _auto_reset_daily()
 
+    go_count = sum(1 for r in results if r.get("verdict") == "GO")
+    watch_count = sum(1 for r in results if r.get("verdict") == "WATCH")
+    print(f"  🤖 Auto-execute: {len(results)} results  GO={go_count}  WATCH={watch_count}  verdicts={AUTO_VERDICTS}  minScore={AUTO_MIN_SCORE}")
+
     with _auto_lock:
         trades_today = _auto_state["trades_today"]
         executed     = _auto_state["executed"]
@@ -2131,6 +2138,7 @@ def _auto_execute(results):
 
         # ── Filters ───────────────────────────────────────────────────────────
         if verdict not in AUTO_VERDICTS:
+            print(f"  ⏭  {ticker}: verdict={verdict} not in {AUTO_VERDICTS}, skip")
             continue
         if score.get("total", 0) < AUTO_MIN_SCORE:
             print(f"  ⏭  {ticker}: score {score.get('total',0)} < {AUTO_MIN_SCORE}, skip")
