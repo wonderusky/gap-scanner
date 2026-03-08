@@ -17,11 +17,6 @@
   Debug:     http://localhost:5001/api/diagnostic
 ════════════════════════════════════════════════════
 
-  ✅ Loaded auto_state from disk: daily_pnl=$+0.00, 0 trades
-  ✅ Marked 1 today's sell orders as logged (prevents double-count)
-  🔄 Recovered open position: TSLS 3972sh @ $5.80  stop=$5.68  target=$6.03
-  🔄 Recovered open position: TZA 3432sh @ $6.71  stop=$6.58  target=$6.98
-  ✅ Recovered 2 open position(s) — exit ladder active
   👁  Order monitor started (checking every 30s)
   🕐 Scheduler started — scanning 08:00–10:00 ET every 5min
  * Serving Flask app 'server'
@@ -29,14 +24,6 @@
 [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
  * Running on all addresses (0.0.0.0)
  * Running on http://127.0.0.1:5001
- * Running on http://100.92.3.4:5001
+ * Running on http://192.168.86.30:5001
 [33mPress CTRL+C to quit[0m
-127.0.0.1 - - [03/Mar/2026 09:14:19] "GET /api/status HTTP/1.1" 200 -
-127.0.0.1 - - [03/Mar/2026 09:14:19] "GET /api/auto-trade/status HTTP/1.1" 200 -
-127.0.0.1 - - [03/Mar/2026 09:14:19] "GET /api/positions HTTP/1.1" 200 -
-127.0.0.1 - - [03/Mar/2026 09:14:20] "GET /api/orders HTTP/1.1" 200 -
-127.0.0.1 - - [03/Mar/2026 09:14:20] "GET /api/account HTTP/1.1" 200 -
-127.0.0.1 - - [03/Mar/2026 09:14:21] "GET /api/status HTTP/1.1" 200 -
-127.0.0.1 - - [03/Mar/2026 09:14:24] "GET /api/positions HTTP/1.1" 200 -
-127.0.0.1 - - [03/Mar/2026 09:14:25] "GET /api/orders HTTP/1.1" 200 -
-127.0.0.1 - - [03/Mar/2026 09:14:25] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [08/Mar/2026 06:33:14] "GET /api/status HTTP/1.1" 200 -

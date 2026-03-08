@@ -931,23 +931,23 @@ def run_scan(filters):
         short_ratio    = yfd.get("short_ratio")
 
         # ── Trade verdict ──────────────────────────────────────────────────────
-        # GO:   A/B rank + above VWAP + rel_vol ≥2x + tight spread
-        # WATCH: B/C rank or one condition missing
-        # SKIP:  C rank or rel_vol <1x or very wide spread
+        # GO:    A or B rank + above VWAP + rel_vol ≥1x + tight spread (3 of 4)
+        # WATCH: A or B rank + 2 of 4 conditions
+        # SKIP:  C rank or only 1 condition
         s        = score_setup(c["gap"], rel_vol, float_m, catalyst)
         rank_val = s.get("priority", "C")
         go_conditions = [
             rank_val in ("A", "B"),
             above_vwap is True,
-            rel_vol >= 1.0,                                     # was 2.0 — too strict for large caps
+            rel_vol >= 1.0,
             spread_pct is not None and spread_pct < 0.5,
         ]
         go_count = sum(go_conditions)
-        if rank_val == "A" and go_count >= 3:
+        if rank_val in ("A", "B") and go_count >= 3:
             verdict = "GO"
-        elif rank_val in ("A","B") and go_count >= 2:
+        elif rank_val in ("A", "B") and go_count >= 2:
             verdict = "WATCH"
-        elif rank_val == "C" and go_count >= 3:                 # strong setup even with C rank
+        elif rank_val == "C" and go_count >= 3:
             verdict = "WATCH"
         else:
             verdict = "SKIP"
