@@ -2013,7 +2013,7 @@ def _send_buy_email(ticker, shares, entry_price, stop, target1, gap_pct, catalys
             <td style="padding:6px 0">{score} / <b style="color:#3fb950">{verdict}</b></td></tr>
       </table>
       <div style="margin-top:16px;font-size:11px;color:#484f58;border-top:1px solid #21262d;padding-top:12px">
-        Bracket order placed — stop and target will execute automatically.</div>
+        Limit order queued — fills only if price ≤ ${entry_price:.2f} at open. Stop and target activate on fill.</div>
     </div>"""
     text = f"AUTO-BUY {ticker}: {shares}sh @ ${entry_price:.2f}  stop=${stop:.2f}  target=${target1:.2f}  gap={gap_pct:.1f}%"
     _send_email(subject, html, text)
@@ -2208,13 +2208,18 @@ def _auto_execute_inner(results):
             print(f"  ⏭  {ticker}: missing stop/target, skip")
             continue
 
-        # ── Place bracket market order ────────────────────────────────────────
+        # ── Place bracket limit order ─────────────────────────────────────────
+        # Use limit order (not market) to protect against bad fills at open.
+        # Limit = entry_price * 1.005 (0.5% above pre-market quote).
+        # If stock gaps against us at open, order simply won't fill.
         try:
-            order_req = MarketOrderRequest(
+            limit_px = round(entry_price * 1.005, 2)
+            order_req = LimitOrderRequest(
                 symbol        = ticker,
                 qty           = shares,
                 side          = OrderSide.BUY,
                 time_in_force = TimeInForce.DAY,
+                limit_price   = limit_px,
                 order_class   = OrderClass.BRACKET,
                 stop_loss     = {"stop_price":  round(float(stop),    2)},
                 take_profit   = {"limit_price": round(float(target1), 2)},
@@ -2222,13 +2227,13 @@ def _auto_execute_inner(results):
             order = _tc().submit_order(order_req)
             order_id = str(order.id)
 
-            print(f"  ✅ AUTO-BUY {ticker}: {shares}sh @ ~${entry_price:.2f}  stop=${stop:.2f}  target=${target1:.2f}  [{order_id[:8]}]")
+            print(f"  ✅ AUTO-BUY {ticker}: {shares}sh limit=${limit_px:.2f}  stop=${stop:.2f}  target=${target1:.2f}  [{order_id[:8]}]")
 
             trade_info = {
                 "ticker":      ticker,
                 "order_id":    order_id,
                 "shares":      shares,
-                "entry_price": entry_price,
+                "entry_price": limit_px,
                 "stop":        float(stop),
                 "target1":     float(target1),
                 "gap_pct":     gap_pct,

@@ -26,4 +26,13 @@
  * Running on http://127.0.0.1:5001
  * Running on http://100.92.3.10:5001
 [33mPress CTRL+C to quit[0m
-127.0.0.1 - - [09/Mar/2026 06:57:23] "GET /api/status HTTP/1.1" 200 -
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: NVD"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: USO"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: TSLS"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: UVIX"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: TZA"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SQQQ"}}}
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SOXS"}}}
+127.0.0.1 - - [09/Mar/2026 07:12:53] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [09/Mar/2026 07:12:56] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [09/Mar/2026 07:12:56] "GET /api/auto-trade/status HTTP/1.1" 200 -
