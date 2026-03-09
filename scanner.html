@@ -1049,6 +1049,12 @@ function selectRow(idx) {
       ${d.shortFloat ? `<div style="font-size:10px;color:var(--text-dim)">Short Float &nbsp;<b style="color:${d.shortFloat > 20 ? 'var(--yellow)' : 'var(--text-dim)'}">${d.shortFloat}%</b>${d.shortFloat > 20 ? ' ⚡ squeeze risk' : ''}</div>` : ''}
       ${d.sharesOutM  ? `<div style="font-size:10px;color:var(--text-dim)">Shares Out &nbsp;<b style="color:var(--text-dim)">${d.sharesOutM}M</b></div>` : ''}
       ${d.sharesShortM ? `<div style="font-size:10px;color:var(--text-dim)">Short Shares &nbsp;<b style="color:${d.shortFloat > 20 ? 'var(--yellow)' : 'var(--text-dim)'}">${d.sharesShortM}M</b>${d.shortRatio ? ` <span style="color:var(--text-dim)">(${d.shortRatio}d cover)</span>` : ''}</div>` : ''}
+      ${d.analystTarget ? `<div style="font-size:10px;color:var(--text-dim);margin-top:4px">
+        Analyst Target &nbsp;<b style="color:${d.analystTarget > d.price ? 'var(--green)' : 'var(--red)'}">${'$'}${d.analystTarget}</b>
+        ${d.analystLow && d.analystHigh ? `<span style="color:var(--text-dim)"> (${' $'}${d.analystLow}–${' $'}${d.analystHigh})</span>` : ''}
+        ${d.analystCount ? `<span style="color:var(--text-dim)"> · ${d.analystCount} analysts</span>` : ''}
+        &nbsp;<b style="color:${d.analystTarget > d.price ? 'var(--green)' : 'var(--red)'}">${d.analystTarget > d.price ? '▲' : '▼'} ${Math.abs(((d.analystTarget - d.price)/d.price)*100).toFixed(1)}%</b>
+      </div>` : ''}
     </div>
     <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">
       <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-bottom:4px">CATALYST SOURCE</div>
@@ -1296,6 +1302,15 @@ async function lookupTicker() {
         <div class="qq-tech-row"><span class="qq-tech-label">Float</span><span class="qq-tech-val">${fmtFloat(data.float_shares)}</span></div>
         <div class="qq-tech-row"><span class="qq-tech-label">Short %</span><span class="qq-tech-val" style="color:${(data.short_float||0)>20?'var(--yellow)':'inherit'}">${data.short_float != null ? data.short_float+'%' : '—'}${(data.short_float||0)>20?' ⚡':''}</span></div>
         <div class="qq-tech-row"><span class="qq-tech-label">P/E</span><span class="qq-tech-val">${data.pe ? data.pe.toFixed(1) : '—'}</span></div>
+        ${data.analyst_target ? `<div class="qq-tech-row" style="grid-column:1/-1">
+          <span class="qq-tech-label">Analyst Target</span>
+          <span class="qq-tech-val" style="color:${data.analyst_target > data.price ? 'var(--green)' : 'var(--red)'}">
+            $${data.analyst_target}
+            ${data.analyst_low && data.analyst_high ? `<span style="color:var(--text-dim);font-size:9px"> ($${data.analyst_low}–$${data.analyst_high})</span>` : ''}
+            &nbsp;${data.analyst_target > data.price ? '▲' : '▼'} ${Math.abs(((data.analyst_target - data.price)/data.price)*100).toFixed(1)}%
+            ${data.analyst_count ? `<span style="color:var(--text-dim);font-size:9px"> · ${data.analyst_count}</span>` : ''}
+          </span>
+        </div>` : ''}
       </div>
 
       <!-- Actions -->

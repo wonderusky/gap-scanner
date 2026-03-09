@@ -501,7 +501,11 @@ def _fetch_one_yf(ticker):
         except Exception:
             pass
 
-        short_float = round((info.get("shortPercentOfFloat") or 0) * 100, 1)
+        short_float   = round((info.get("shortPercentOfFloat") or 0) * 100, 1)
+        analyst_target = round(float(info.get("targetMeanPrice") or 0), 2) or None
+        analyst_low    = round(float(info.get("targetLowPrice")  or 0), 2) or None
+        analyst_high   = round(float(info.get("targetHighPrice") or 0), 2) or None
+        analyst_count  = info.get("numberOfAnalystOpinions") or None
 
         # Grab top 5 news headlines — yfinance structure: item["content"]["..."]
         yf_headline = ""
@@ -548,6 +552,10 @@ def _fetch_one_yf(ticker):
             "avg_vol":        avg_vol,
             "has_earnings":   has_earnings,
             "short_float":    short_float,
+            "analyst_target": analyst_target,
+            "analyst_low":    analyst_low,
+            "analyst_high":   analyst_high,
+            "analyst_count":  analyst_count,
             "yf_headline":    yf_headline,
             "yf_news":        yf_news,
         }
@@ -929,6 +937,10 @@ def run_scan(filters):
         shares_out_m   = yfd.get("shares_out_m")
         shares_short_m = yfd.get("shares_short_m")
         short_ratio    = yfd.get("short_ratio")
+        analyst_target = yfd.get("analyst_target")
+        analyst_low    = yfd.get("analyst_low")
+        analyst_high   = yfd.get("analyst_high")
+        analyst_count  = yfd.get("analyst_count")
 
         # ── Trade verdict ──────────────────────────────────────────────────────
         # GO:    A or B rank + above VWAP + rel_vol ≥1x + tight spread (3 of 4)
@@ -971,6 +983,10 @@ def run_scan(filters):
             "sharesOutM":    shares_out_m,
             "sharesShortM":  shares_short_m,
             "shortRatio":    short_ratio,
+            "analystTarget": analyst_target,
+            "analystLow":    analyst_low,
+            "analystHigh":   analyst_high,
+            "analystCount":  analyst_count,
             "verdict":     verdict,
             "catalyst":    catalyst,
             "catSource":   cat_source,
