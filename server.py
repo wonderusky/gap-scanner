@@ -1837,6 +1837,7 @@ _auto_state = {
     "logged_order_ids": set(),
 }
 _auto_lock = threading.Lock()
+_auto_execute_lock = threading.Lock()  # prevents concurrent auto-executions duplicating orders
 
 
 def _save_auto_state():
@@ -2114,6 +2115,19 @@ def _auto_execute(results):
         print("  ⚠  Auto-trade: trading not configured")
         return []
 
+    # Serialize — prevents two concurrent scans (scheduler + manual) from both placing orders
+    if not _auto_execute_lock.acquire(blocking=False):
+        print("  ⏳ Auto-execute already running — skipping concurrent call")
+        return []
+    try:
+        return _auto_execute_inner(results)
+    finally:
+        _auto_execute_lock.release()
+
+
+def _auto_execute_inner(results):
+    """Inner execution logic — called only when _auto_execute_lock is held."""
+
     _auto_reset_daily()
 
     go_count = sum(1 for r in results if r.get("verdict") == "GO")
@@ -2134,10 +2148,19 @@ def _auto_execute(results):
         print(f"  🚫 Auto-trade: daily limit reached ({AUTO_MAX_TRADES_PER_DAY})")
         return []
 
-    # Get open positions to avoid doubling up
+    # Get open positions AND pending orders to avoid doubling up
     try:
         tc = _tc()
         open_positions = {p.symbol for p in tc.get_all_positions()}
+        # Also check open/pending orders — bracket legs show as "held" not filled
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        pending_orders = tc.get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus.OPEN, limit=50
+        ))
+        open_positions |= {o.symbol for o in pending_orders}
+        if open_positions:
+            print(f"  🔍 Auto-trade: skipping {open_positions} (open position or pending order)")
     except Exception as e:
         print(f"  ⚠  Auto-trade: could not fetch positions: {e}")
         open_positions = set()
