@@ -97,6 +97,7 @@ try:
     EXIT_TRAIL_PCT          = getattr(config, "EXIT_TRAIL_PCT",          1.5)
     EXIT_HARD_TIME          = getattr(config, "EXIT_HARD_TIME",          "10:00")
     EXIT_VWAP_BREAK         = getattr(config, "EXIT_VWAP_BREAK",         True)
+    ORDER_REFRESH_PCT       = getattr(config, "ORDER_REFRESH_PCT",       1.0)
 except ImportError:
     API_KEY    = os.environ.get("ALPACA_API_KEY", "")
     API_SECRET = os.environ.get("ALPACA_SECRET_KEY", "")
@@ -122,6 +123,7 @@ except ImportError:
     EXIT_TRAIL_PCT          = 1.5
     EXIT_HARD_TIME          = "10:00"
     EXIT_VWAP_BREAK         = True
+    ORDER_REFRESH_PCT       = 1.0
 
 def _tc():
     """Return a cached TradingClient (paper or live per config)."""
@@ -2562,6 +2564,84 @@ def _run_exit_ladder(order_id, info, tc):
             return
 
 
+def _refresh_queued_order(order_id, info, tc):
+    """
+    For unfilled queued orders: if current price has drifted >1% from
+    the limit price, cancel and resubmit at current price + 0.5%.
+    Keeps stop/target distance proportional to original.
+    """
+    ticker      = info["ticker"]
+    limit_price = info.get("entry_price", 0)
+    orig_stop   = info.get("stop", 0)
+    orig_target = info.get("target1", 0)
+    shares      = info.get("shares", 0)
+
+    if not limit_price or not shares:
+        return
+
+    price = _get_current_price(ticker)
+    if not price:
+        return
+
+    drift_pct = abs(price - limit_price) / limit_price * 100
+    if drift_pct < ORDER_REFRESH_PCT:
+        return  # within tolerance, leave it alone
+
+    # Recalculate new levels preserving original stop/target distances
+    stop_dist   = limit_price - orig_stop    # original dollar risk
+    target_dist = orig_target - limit_price  # original dollar reward
+
+    new_limit  = round(price * 1.005, 2)
+    new_stop   = round(new_limit - stop_dist, 2)
+    new_target = round(new_limit + target_dist, 2)
+
+    # Sanity checks
+    if new_stop <= 0 or new_stop >= new_limit or new_target <= new_limit:
+        print(f"  ⚠ Refresh {ticker}: bad levels, skipping (limit={new_limit} stop={new_stop} target={new_target})")
+        return
+
+    print(f"  🔄 REFRESH {ticker}: price drifted {drift_pct:.1f}% from limit ${limit_price:.2f} → cancelling and resubmitting at ${new_limit:.2f}")
+
+    try:
+        tc.cancel_order_by_id(order_id)
+    except Exception as e:
+        print(f"  ⚠ Refresh {ticker}: cancel failed: {e}")
+        return
+
+    try:
+        new_order = tc.submit_order(LimitOrderRequest(
+            symbol        = ticker,
+            qty           = shares,
+            side          = OrderSide.BUY,
+            time_in_force = TimeInForce.DAY,
+            limit_price   = new_limit,
+            order_class   = OrderClass.BRACKET,
+            stop_loss     = {"stop_price":  new_stop},
+            take_profit   = {"limit_price": new_target},
+        ))
+        new_id = str(new_order.id)
+        print(f"  ✅ Refreshed {ticker}: new order {new_id[:8]}  limit=${new_limit}  stop=${new_stop}  target=${new_target}")
+
+        with _auto_lock:
+            _auto_state["open_orders"].pop(order_id, None)
+            _auto_state["open_orders"][new_id] = {
+                **info,
+                "order_id":    new_id,
+                "entry_price": new_limit,
+                "stop":        new_stop,
+                "target1":     new_target,
+                "status":      "open",
+                "refreshed":   True,
+            }
+        _save_auto_state()
+
+    except Exception as e:
+        print(f"  ❌ Refresh {ticker}: resubmit failed: {e}")
+        # Remove stale order from tracking since cancel succeeded
+        with _auto_lock:
+            _auto_state["open_orders"].pop(order_id, None)
+
+
 def _monitor_orders():
     """
     Background thread — polls open auto-orders every AUTO_MONITOR_INTERVAL seconds.
@@ -2587,6 +2667,10 @@ def _monitor_orders():
                                     _auto_state["open_orders"][order_id]["status"] = "filled"
                                     _auto_state["open_orders"][order_id]["filled_at"] = datetime.now(timezone.utc).isoformat()
                                     print(f"  ✅ Order filled: {info['ticker']} [{order_id[:8]}]")
+
+                        elif status in ("new", "accepted", "pending_new", "held"):
+                            # Order is queued but not yet filled — refresh if price drifted
+                            _refresh_queued_order(order_id, info, tc)
 
                         elif status in ("replaced",):
                             # Bracket orders get replaced by child legs — mark filled, keep watching
