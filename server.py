@@ -2184,7 +2184,7 @@ def _auto_execute_inner(results):
         if score.get("total", 0) < AUTO_MIN_SCORE:
             print(f"  ⏭  {ticker}: score {score.get('total',0)} < {AUTO_MIN_SCORE}, skip")
             continue
-        if AUTO_REQUIRE_ABOVE_VWAP and not r.get("aboveVwap"):
+        if AUTO_REQUIRE_ABOVE_VWAP and not r.get("aboveVwap") and not r.get("above_vwap"):
             print(f"  ⏭  {ticker}: below VWAP, skip")
             continue
         if ticker in open_positions:

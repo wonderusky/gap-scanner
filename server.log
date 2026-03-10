@@ -17,6 +17,10 @@
   Debug:     http://localhost:5001/api/diagnostic
 ════════════════════════════════════════════════════
 
+  ✅ Loaded auto_state from disk: daily_pnl=$-82.40, 1 trades
+  ✅ Marked 3 today's sell orders as logged (prevents double-count)
+  🔄 Recovered open position: DAWN 1085sh @ $21.24  stop=$20.82  target=$22.09
+  ✅ Recovered 1 open position(s) — exit ladder active
   👁  Order monitor started (checking every 30s)
   🕐 Scheduler started — scanning 08:00–10:00 ET every 5min
  * Serving Flask app 'server'
@@ -24,13 +28,9 @@
 [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
  * Running on all addresses (0.0.0.0)
  * Running on http://127.0.0.1:5001
- * Running on http://100.92.3.10:5001
+ * Running on http://192.168.86.30:5001
 [33mPress CTRL+C to quit[0m
-HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: UVIX"}}}
-HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: USO"}}}
-HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: NVD"}}}
-HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: TZA"}}}
-HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: TSLS"}}}
-HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SOXS"}}}
-HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SQQQ"}}}
-127.0.0.1 - - [09/Mar/2026 07:21:44] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 16:56:36] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 16:56:38] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 16:56:38] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 16:56:38] "GET /api/account HTTP/1.1" 200 -
