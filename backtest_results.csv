@@ -1,0 +1,8 @@
+date,scan_time,ticker,verdict,priority,score,entry_price,stop,target1,target2,gap_pct,rel_vol,catalyst,float_m,short_float,above_vwap,spread_pct,outcome_time,outcome_price,outcome_pct,hit_target1,hit_target2,hit_stop,result,would_profit,bt_open,bt_stop,bt_stop_pct,bt_t1,bt_t2,bt_outcome,bt_exit,bt_pnl_r,bt_pnl_$,bt_shares,bt_mins
+2026-03-02,05:30,FIGS,GO,A,54,15.46,15.34,15.61,15.77,23.98,1.53,news,152.3,11.0,True,,06:00,15.46,0.0,False,False,False,NEGATIVE,0.0,15.640000343322754,15.51,0.8,15.77,15.89,STOPPED,15.51,-1.04,-207.74,1598,1
+2026-03-03,07:48,NTLA,GO,A,69,15.14,15.03,15.29,15.44,9.87,1.91,fda,112.2,43.8,True,29.59,08:18,15.46,2.11,True,True,False,TARGET2,0.22,14.789999961853027,14.67,0.8,14.91,15.03,STOPPED,14.67,-1.01,-202.8,1690,1
+2026-03-04,08:00,BEAM,GO,A,40,30.4,30.17,30.7,31.01,5.89,1.34,news,88.0,22.4,True,28.947,08:30,27.19,-10.56,False,False,True,STOPPED,-0.23,27.739999771118164,27.51,0.83,27.97,28.2,STOPPED,27.51,-1.0,-207.23,901,1
+2026-03-05,05:27,DAWN,GO,A,77,12.88,12.78,13.01,13.14,28.48,1.93,fda,74.3,14.8,True,,05:58,12.88,0.0,False,False,False,NEGATIVE,0.0,12.65999984741211,12.56,0.8,12.76,12.86,TARGET1,12.76,0.99,197.4,1974,3
+2026-03-06,09:20,TSLS,WATCH,B,58,5.78,5.74,5.84,5.9,3.58,4.19,news,150.0,0,True,3.287,09:50,5.73,-0.87,False,False,True,STOPPED,-0.04,5.699999809265137,5.65,0.8,5.75,5.79,TARGET1,5.75,1.1,219.25,4385,17
+2026-03-09,09:20,TSLS,GO,A,46,5.88,5.84,5.94,6.0,5.38,2.3,news,150.0,0,True,3.231,08:50,5.88,0.0,False,False,False,NEGATIVE,0.0,5.809999942779541,5.76,0.8,5.86,5.9,TARGET1,5.86,1.08,215.1,4302,15
+2026-03-10,09:25,BITO,GO,B,27,9.77,9.7,9.87,9.97,4.1,0.61,news,150.0,0,True,0.102,08:55,9.66,-1.13,False,False,True,STOPPED,-0.07,9.760000228881836,9.68,0.8,9.84,9.92,STOPPED,9.68,-1.02,-204.88,2561,4

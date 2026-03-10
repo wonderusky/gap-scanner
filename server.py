@@ -98,6 +98,10 @@ try:
     EXIT_HARD_TIME          = getattr(config, "EXIT_HARD_TIME",          "10:00")
     EXIT_VWAP_BREAK         = getattr(config, "EXIT_VWAP_BREAK",         True)
     ORDER_REFRESH_PCT       = getattr(config, "ORDER_REFRESH_PCT",       1.0)
+    AUTO_REQUIRE_GAP_HOLD   = getattr(config, "AUTO_REQUIRE_GAP_HOLD",   True)
+    AUTO_GAP_HOLD_TOLERANCE = getattr(config, "AUTO_GAP_HOLD_TOLERANCE", 0.01)
+    AUTO_MAX_FLOAT_M        = getattr(config, "AUTO_MAX_FLOAT_M",        100)
+    LEVERAGED_ETFS          = getattr(config, "LEVERAGED_ETFS",          [])
 except ImportError:
     API_KEY    = os.environ.get("ALPACA_API_KEY", "")
     API_SECRET = os.environ.get("ALPACA_SECRET_KEY", "")
@@ -124,6 +128,10 @@ except ImportError:
     EXIT_HARD_TIME          = "10:00"
     EXIT_VWAP_BREAK         = True
     ORDER_REFRESH_PCT       = 1.0
+    AUTO_REQUIRE_GAP_HOLD   = True
+    AUTO_GAP_HOLD_TOLERANCE = 0.01
+    AUTO_MAX_FLOAT_M        = 100
+    LEVERAGED_ETFS          = ["TZA","UVIX","SOXS","SQQQ","TQQQ","SPXS","SDOW","LABD","SRTY","FAZ","TNA","UPRO","SPXL","SOXL","TSLS","TSDD","UVXY","SVXY"]
 
 def _tc():
     """Return a cached TradingClient (paper or live per config)."""
@@ -654,7 +662,7 @@ MAX_POSITION_PCT = 25.0  # Never more than 25% of account in one trade
 
 def calc_trade(price, account_size, risk_pct):
     max_risk  = account_size * (risk_pct / 100)
-    stop_dist = price * 0.0075
+    stop_dist = max(price * 0.0075, price * 0.008)   # min 0.8% stop
     shares    = int(max_risk / stop_dist) if stop_dist > 0 else 0
 
     # Hard cap: never exceed MAX_POSITION_PCT of account
@@ -667,8 +675,8 @@ def calc_trade(price, account_size, risk_pct):
     return {
         "shares":  shares,
         "stop":    round(price - stop_dist, 2),
-        "target1": round(price * 1.01, 2),
-        "target2": round(price * 1.02, 2),
+        "target1": round(price + stop_dist * 1.0, 2),   # 1R
+        "target2": round(price + stop_dist * 2.0, 2),   # 2R — primary exit target
         "maxRisk": round(max_risk),
         "posSize": pos_size,
         "posPct":  pos_pct,
@@ -2187,6 +2195,40 @@ def _auto_execute_inner(results):
         if AUTO_REQUIRE_ABOVE_VWAP and not r.get("aboveVwap") and not r.get("above_vwap"):
             print(f"  ⏭  {ticker}: below VWAP, skip")
             continue
+
+        # ── Filter 1: GO-only (WATCH allowed only for leveraged ETFs) ─────────
+        is_etf = ticker in LEVERAGED_ETFS
+        if verdict == "WATCH" and not is_etf:
+            print(f"  ⏭  {ticker}: WATCH verdict only allowed for leveraged ETFs, skip")
+            continue
+
+        # ── Filter 2: Float cap (skip large-float stocks, ETFs exempt) ────────
+        float_m = r.get("float") or 0
+        try: float_m = float(float_m)
+        except: float_m = 0
+        if not is_etf and float_m > AUTO_MAX_FLOAT_M and float_m > 0:
+            print(f"  ⏭  {ticker}: float {float_m:.0f}M > {AUTO_MAX_FLOAT_M}M, skip")
+            continue
+
+        # ── Filter 3: Open-bar confirmation (gap must still be holding) ────────
+        # Only applies at/after 9:30 ET — skip pre-market
+        now_et = datetime.now(timezone(timedelta(hours=-5)))
+        try:
+            import pytz
+            now_et = datetime.now(pytz.timezone("America/New_York"))
+        except ImportError:
+            pass
+        at_open = now_et.hour > 9 or (now_et.hour == 9 and now_et.minute >= 32)
+        if AUTO_REQUIRE_GAP_HOLD and at_open:
+            pm_price   = r.get("price", 0)   # pre-market reference price
+            live_price = _get_current_price(ticker)
+            if pm_price and live_price:
+                fade_pct = (pm_price - live_price) / pm_price
+                if fade_pct > AUTO_GAP_HOLD_TOLERANCE:
+                    print(f"  ⏭  {ticker}: gap faded {fade_pct*100:.1f}% at open (pm={pm_price:.2f} now={live_price:.2f}), skip")
+                    continue
+                else:
+                    print(f"  ✓  {ticker}: gap holding (pm={pm_price:.2f} now={live_price:.2f}, fade={fade_pct*100:.1f}%)")
         if ticker in open_positions:
             print(f"  ⏭  {ticker}: already have position, skip")
             continue
@@ -2199,6 +2241,9 @@ def _auto_execute_inner(results):
         shares      = trade.get("shares", 0)
         stop        = trade.get("stop")
         target1     = trade.get("target1")
+        target2     = trade.get("target2")
+        # Use 2R target (target2) as the bracket take-profit — better R:R
+        bracket_target = target2 if target2 else target1
         entry_price = r.get("price", 0)
         gap_pct     = r.get("gap", 0)
         catalyst    = r.get("catalyst", "")
@@ -2206,14 +2251,13 @@ def _auto_execute_inner(results):
         if not shares or shares < 1:
             print(f"  ⏭  {ticker}: 0 shares calculated, skip")
             continue
-        if not stop or not target1:
+        if not stop or not bracket_target:
             print(f"  ⏭  {ticker}: missing stop/target, skip")
             continue
 
         # ── Place bracket limit order ─────────────────────────────────────────
-        # Use limit order (not market) to protect against bad fills at open.
         # Limit = entry_price * 1.005 (0.5% above pre-market quote).
-        # If stock gaps against us at open, order simply won't fill.
+        # Take-profit = target2 (2R) for proper risk:reward.
         try:
             limit_px = round(entry_price * 1.005, 2)
             order_req = LimitOrderRequest(
@@ -2223,13 +2267,13 @@ def _auto_execute_inner(results):
                 time_in_force = TimeInForce.DAY,
                 limit_price   = limit_px,
                 order_class   = OrderClass.BRACKET,
-                stop_loss     = {"stop_price":  round(float(stop),    2)},
-                take_profit   = {"limit_price": round(float(target1), 2)},
+                stop_loss     = {"stop_price":  round(float(stop),           2)},
+                take_profit   = {"limit_price": round(float(bracket_target), 2)},
             )
             order = _tc().submit_order(order_req)
             order_id = str(order.id)
 
-            print(f"  ✅ AUTO-BUY {ticker}: {shares}sh limit=${limit_px:.2f}  stop=${stop:.2f}  target=${target1:.2f}  [{order_id[:8]}]")
+            print(f"  ✅ AUTO-BUY {ticker}: {shares}sh limit=${limit_px:.2f}  stop=${stop:.2f}  target2=${bracket_target:.2f} (2R)  [{order_id[:8]}]")
 
             trade_info = {
                 "ticker":      ticker,
@@ -2476,10 +2520,12 @@ def _run_exit_ladder(order_id, info, tc):
         except Exception:
             pass
 
-    # ── 3. PARTIAL AT +2R ─────────────────────────────────────────────────────
+    # ── 3. PARTIAL AT +1R ─────────────────────────────────────────────────────
+    # Bracket take-profit is set at 2R. At 1R, sell 50% and move stop to BE.
+    # This locks in profit and lets the bracket run for full 2R on remainder.
     if EXIT_PARTIAL_AT_2R and not partial_done:
-        target_2r = entry + (stop_dist * 2)
-        if price >= target_2r:
+        target_1r = entry + stop_dist   # 1R
+        if price >= target_1r:
             partial_qty = max(1, shares // 2)
             remain_qty  = shares - partial_qty
             print(f"  🎯 +2R PARTIAL {ticker}: selling {partial_qty}sh @ ${price:.2f}, keeping {remain_qty}sh with BE stop")

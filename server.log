@@ -30,7 +30,28 @@
  * Running on http://127.0.0.1:5001
  * Running on http://192.168.86.30:5001
 [33mPress CTRL+C to quit[0m
-127.0.0.1 - - [10/Mar/2026 16:56:36] "GET /api/status HTTP/1.1" 200 -
-127.0.0.1 - - [10/Mar/2026 16:56:38] "GET /api/positions HTTP/1.1" 200 -
-127.0.0.1 - - [10/Mar/2026 16:56:38] "GET /api/orders HTTP/1.1" 200 -
-127.0.0.1 - - [10/Mar/2026 16:56:38] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:43] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:43] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:44] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:45] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:48] "GET /api/status HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:48] "GET /api/auto-trade/status HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:48] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:48] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:49] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:53] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:53] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:54] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:58] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:58] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:10:59] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:11:03] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:11:03] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:11:03] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:11:05] "GET /api/quote/NVDA HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:11:08] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:11:08] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:11:08] "GET /api/account HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:11:13] "GET /api/positions HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:11:13] "GET /api/orders HTTP/1.1" 200 -
+127.0.0.1 - - [10/Mar/2026 17:11:13] "GET /api/account HTTP/1.1" 200 -
