@@ -1057,6 +1057,31 @@ function selectRow(idx) {
       </div>` : ''}
     </div>
     <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">
+      <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-bottom:4px">VALUATION</div>
+      ${(()=>{
+        const rows = [];
+        const vr = (label, val, opts={}) => {
+          if (!val && val !== 0) return '';
+          let color = 'var(--text-dim)';
+          if (opts.green && val < opts.green) color = 'var(--green)';
+          else if (opts.red && val > opts.red) color = 'var(--red)';
+          return `<div style="font-size:10px;color:var(--text-dim);display:flex;justify-content:space-between;margin-bottom:2px"><span>${label}</span><b style="color:${color}">${val}</b></div>`;
+        };
+        let html = '';
+        html += vr('P/E (ttm)',  d.peTrailing  ? d.peTrailing.toFixed(1)  : null, {green:15, red:40});
+        html += vr('P/E (fwd)',  d.peForward   ? d.peForward.toFixed(1)   : null, {green:15, red:35});
+        html += vr('PEG',        d.pegRatio    ? d.pegRatio.toFixed(2)    : null, {green:1,  red:2});
+        html += vr('P/S',        d.psRatio     ? d.psRatio.toFixed(2)     : null, {green:2,  red:10});
+        html += vr('P/B',        d.pbRatio     ? d.pbRatio.toFixed(2)     : null, {green:1,  red:5});
+        html += vr('EV/EBITDA',  d.evEbitda    ? d.evEbitda.toFixed(1)    : null, {green:10, red:25});
+        if (d.recKey) {
+          const recColor = {strongbuy:'var(--green)',buy:'var(--green)',hold:'var(--yellow)',sell:'var(--red)',strongsell:'var(--red)'}[d.recKey] || 'var(--text-dim)';
+          html += `<div style="font-size:10px;color:var(--text-dim);display:flex;justify-content:space-between;margin-bottom:2px"><span>Rating</span><b style="color:${recColor}">${d.recKey.replace('strong','STRONG ').toUpperCase()}${d.recMean?' · '+d.recMean:''}</b></div>`;
+        }
+        return html || '<div style="font-size:10px;color:var(--text-dim)">No valuation data</div>';
+      })()}
+    </div>
+    <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">
       <div style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-bottom:4px">CATALYST SOURCE</div>
       ${renderCatalystSource(d)}
     </div>
@@ -1301,14 +1326,20 @@ async function lookupTicker() {
         <div class="qq-tech-row"><span class="qq-tech-label">Mkt Cap</span><span class="qq-tech-val">${fmtCap(data.market_cap)}</span></div>
         <div class="qq-tech-row"><span class="qq-tech-label">Float</span><span class="qq-tech-val">${fmtFloat(data.float_shares)}</span></div>
         <div class="qq-tech-row"><span class="qq-tech-label">Short %</span><span class="qq-tech-val" style="color:${(data.short_float||0)>20?'var(--yellow)':'inherit'}">${data.short_float != null ? data.short_float+'%' : '—'}${(data.short_float||0)>20?' ⚡':''}</span></div>
-        <div class="qq-tech-row"><span class="qq-tech-label">P/E</span><span class="qq-tech-val">${data.pe ? data.pe.toFixed(1) : '—'}</span></div>
+        <div class="qq-tech-row"><span class="qq-tech-label">P/E (ttm)</span><span class="qq-tech-val">${data.pe_trailing ? data.pe_trailing.toFixed(1) : (data.pe ? data.pe.toFixed(1) : '—')}</span></div>
+        <div class="qq-tech-row"><span class="qq-tech-label">P/E (fwd)</span><span class="qq-tech-val">${data.pe_forward ? data.pe_forward.toFixed(1) : '—'}</span></div>
+        <div class="qq-tech-row"><span class="qq-tech-label">PEG</span><span class="qq-tech-val" style="color:${data.peg_ratio&&data.peg_ratio<1?'var(--green)':data.peg_ratio&&data.peg_ratio>2?'var(--red)':'inherit'}">${data.peg_ratio ? data.peg_ratio.toFixed(2) : '—'}</span></div>
+        <div class="qq-tech-row"><span class="qq-tech-label">P/S</span><span class="qq-tech-val">${data.ps_ratio ? data.ps_ratio.toFixed(2) : '—'}</span></div>
+        <div class="qq-tech-row"><span class="qq-tech-label">P/B</span><span class="qq-tech-val">${data.pb_ratio ? data.pb_ratio.toFixed(2) : '—'}</span></div>
+        <div class="qq-tech-row"><span class="qq-tech-label">EV/EBITDA</span><span class="qq-tech-val">${data.ev_ebitda ? data.ev_ebitda.toFixed(1) : '—'}</span></div>
+        ${data.rec_key ? `<div class="qq-tech-row" style="grid-column:1/-1"><span class="qq-tech-label">Rating</span><span class="qq-tech-val" style="color:${{'strongbuy':'var(--green)','buy':'var(--green)','hold':'var(--yellow)','sell':'var(--red)','strongsell':'var(--red)'}[data.rec_key]||'inherit'}">${data.rec_key.replace('strong','strong ').toUpperCase()}${data.rec_mean?' ('+data.rec_mean+'/5)':''}</span></div>` : ''}
         ${data.analyst_target ? `<div class="qq-tech-row" style="grid-column:1/-1">
           <span class="qq-tech-label">Analyst Target</span>
           <span class="qq-tech-val" style="color:${data.analyst_target > data.price ? 'var(--green)' : 'var(--red)'}">
             $${data.analyst_target}
             ${data.analyst_low && data.analyst_high ? `<span style="color:var(--text-dim);font-size:9px"> ($${data.analyst_low}–$${data.analyst_high})</span>` : ''}
             &nbsp;${data.analyst_target > data.price ? '▲' : '▼'} ${Math.abs(((data.analyst_target - data.price)/data.price)*100).toFixed(1)}%
-            ${data.analyst_count ? `<span style="color:var(--text-dim);font-size:9px"> · ${data.analyst_count}</span>` : ''}
+            ${data.analyst_count ? `<span style="color:var(--text-dim);font-size:9px"> · ${data.analyst_count} analysts</span>` : ''}
           </span>
         </div>` : ''}
       </div>

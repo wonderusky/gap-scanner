@@ -517,6 +517,20 @@ def _fetch_one_yf(ticker):
         analyst_high   = round(float(info.get("targetHighPrice") or 0), 2) or None
         analyst_count  = info.get("numberOfAnalystOpinions") or None
 
+        # ── Valuation ratios ──────────────────────────────────────────────────
+        def _safe_round(v, n=1):
+            try: return round(float(v), n) if v and float(v) > 0 else None
+            except: return None
+
+        pe_trailing  = _safe_round(info.get("trailingPE"))
+        pe_forward   = _safe_round(info.get("forwardPE"))
+        peg_ratio    = _safe_round(info.get("pegRatio"), 2)
+        ps_ratio     = _safe_round(info.get("priceToSalesTrailing12Months"), 2)
+        pb_ratio     = _safe_round(info.get("priceToBook"), 2)
+        ev_ebitda    = _safe_round(info.get("enterpriseToEbitda"), 1)
+        rec_mean     = _safe_round(info.get("recommendationMean"), 2)  # 1=Strong Buy … 5=Sell
+        rec_key      = info.get("recommendationKey", "")               # "buy", "hold", etc.
+
         # Grab top 5 news headlines — yfinance structure: item["content"]["..."]
         yf_headline = ""
         yf_news     = []
@@ -566,6 +580,14 @@ def _fetch_one_yf(ticker):
             "analyst_low":    analyst_low,
             "analyst_high":   analyst_high,
             "analyst_count":  analyst_count,
+            "pe_trailing":    pe_trailing,
+            "pe_forward":     pe_forward,
+            "peg_ratio":      peg_ratio,
+            "ps_ratio":       ps_ratio,
+            "pb_ratio":       pb_ratio,
+            "ev_ebitda":      ev_ebitda,
+            "rec_mean":       rec_mean,
+            "rec_key":        rec_key,
             "yf_headline":    yf_headline,
             "yf_news":        yf_news,
         }
@@ -951,6 +973,14 @@ def run_scan(filters):
         analyst_low    = yfd.get("analyst_low")
         analyst_high   = yfd.get("analyst_high")
         analyst_count  = yfd.get("analyst_count")
+        pe_trailing    = yfd.get("pe_trailing")
+        pe_forward     = yfd.get("pe_forward")
+        peg_ratio      = yfd.get("peg_ratio")
+        ps_ratio       = yfd.get("ps_ratio")
+        pb_ratio       = yfd.get("pb_ratio")
+        ev_ebitda      = yfd.get("ev_ebitda")
+        rec_mean       = yfd.get("rec_mean")
+        rec_key        = yfd.get("rec_key", "")
 
         # ── Trade verdict ──────────────────────────────────────────────────────
         # GO:    A or B rank + above VWAP + rel_vol ≥1x + tight spread (3 of 4)
@@ -997,6 +1027,14 @@ def run_scan(filters):
             "analystLow":    analyst_low,
             "analystHigh":   analyst_high,
             "analystCount":  analyst_count,
+            "peTrailing":    pe_trailing,
+            "peForward":     pe_forward,
+            "pegRatio":      peg_ratio,
+            "psRatio":       ps_ratio,
+            "pbRatio":       pb_ratio,
+            "evEbitda":      ev_ebitda,
+            "recMean":       rec_mean,
+            "recKey":        rec_key,
             "verdict":     verdict,
             "catalyst":    catalyst,
             "catSource":   cat_source,
@@ -1309,6 +1347,22 @@ def api_quote(ticker):
                 result["pe"]          = info.get("trailingPE")
                 result["52w_high"]    = info.get("fiftyTwoWeekHigh")
                 result["52w_low"]     = info.get("fiftyTwoWeekLow")
+                # Valuation ratios
+                def _sf(v, n=1):
+                    try: return round(float(v), n) if v and float(v) > 0 else None
+                    except: return None
+                result["pe_trailing"] = _sf(info.get("trailingPE"))
+                result["pe_forward"]  = _sf(info.get("forwardPE"))
+                result["peg_ratio"]   = _sf(info.get("pegRatio"), 2)
+                result["ps_ratio"]    = _sf(info.get("priceToSalesTrailing12Months"), 2)
+                result["pb_ratio"]    = _sf(info.get("priceToBook"), 2)
+                result["ev_ebitda"]   = _sf(info.get("enterpriseToEbitda"), 1)
+                result["rec_mean"]    = _sf(info.get("recommendationMean"), 2)
+                result["rec_key"]     = info.get("recommendationKey", "")
+                result["analyst_target"] = _sf(info.get("targetMeanPrice"), 2)
+                result["analyst_low"]    = _sf(info.get("targetLowPrice"), 2)
+                result["analyst_high"]   = _sf(info.get("targetHighPrice"), 2)
+                result["analyst_count"]  = info.get("numberOfAnalystOpinions")
                 # Relative volume
                 avg = result.get("avg_vol_30d", 0)
                 vol = result.get("volume", 0)
